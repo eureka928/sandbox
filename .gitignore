@@ -163,3 +163,8 @@ testing/
 
 # Editors
 .vscode/settings.json
+
+.DS_Store
+
+jobs/
+projects/

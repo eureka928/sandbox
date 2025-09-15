@@ -10,7 +10,7 @@ logger = get_logger()
 
 PROJECTS_FILE = "projects.json"
 CURR_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_DIR = f"{CURR_DIR}/projects"
+PROJECTS_DIR = f"{CURR_DIR}/projects"
 
 
 def download_zip(project, codebase):
@@ -23,8 +23,8 @@ def download_zip(project, codebase):
     commit = codebase["commit"] or 'main'
     repo_name = repo_url.rstrip("/").split("/")[-1]
 
-    project_dir = os.path.join(REPO_DIR, project_id)
-    zip_path = os.path.join(REPO_DIR, f"{project_dir}.zip")
+    project_dir = os.path.join(PROJECTS_DIR, project_id)
+    zip_path = os.path.join(PROJECTS_DIR, f"{project_dir}.zip")
 
     if os.path.exists(project_dir):
         logger.info(f"⏭️  Skipping download for {project_id} (already exists)")
@@ -94,7 +94,7 @@ def fetch_projects():
     curr_dir = os.path.dirname(os.path.abspath(__file__))
     projects_path = os.path.join(curr_dir, PROJECTS_FILE)
 
-    os.makedirs(REPO_DIR, exist_ok=True)
+    os.makedirs(PROJECTS_DIR, exist_ok=True)
 
     with open(projects_path, "r", encoding="utf-8") as f:
         projects = json.load(f)

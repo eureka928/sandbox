@@ -67,6 +67,9 @@ class SandboxManager:
         container_name = f"bitsec_sandbox_{job_id}_{project_id}"
         project_report_dir = os.path.join(reports_dir, f"{project_id}")
         os.makedirs(project_report_dir, exist_ok=True)
+
+        project_code_dir = os.path.join(self.projects_dir, f"{project_id}")
+
         run_id = f"[J:{job_id}|P:{project_id}]"
 
         # clear any previous container runs
@@ -76,7 +79,10 @@ class SandboxManager:
         container = docker.run(
             "bitsec-sandbox:latest",
             name=container_name,
-            volumes=[(agent_filepath, '/app/agent.py')],
+            volumes=[
+                (agent_filepath, '/app/agent.py'),
+                (project_code_dir, '/app/project_code'),
+            ],
             detach=True,
         )
         docker.wait(container)

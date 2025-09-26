@@ -3,11 +3,13 @@ import json
 import os
 import requests
 import sys
+import traceback
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any
 from textwrap import dedent
+
 
 from langchain.output_parsers import PydanticOutputParser
 from pydantic import BaseModel
@@ -69,6 +71,8 @@ class BaselineRunner:
         self.config = config or {}
         self.model = self.config['model']
         self.inference_api = os.getenv('INFERENCE_API', "http://bitsec_proxy:8000")
+        self.project_id = os.getenv('PROJECT_ID', "local")
+        self.job_id = os.getenv('JOB_ID', "local")
 
     def inference(self, messages: dict[str, Any]) -> dict[str, Any]:
         payload = {
@@ -76,9 +80,15 @@ class BaselineRunner:
             "messages": messages,
         }
 
+        headers = {
+            "x_job_id": self.project_id,
+            "x_project_id": self.job_id,
+        }
+
         resp = requests.post(
             f"{self.inference_api}/inference",
-            json=payload
+            headers=headers,
+            json=payload,
         )
         resp.raise_for_status()
 
@@ -378,10 +388,13 @@ def agent_main(project_dir=None):
 
     try:
         runner = BaselineRunner(config)
+
+        if runner.project_id:
+            project_dir = "/app/project_code"
         
-        source_dir = Path(project_dir)
-        if not source_dir.exists():
-            console.print(f"[red]Error: Source directory not found: {source_dir}[/red]")
+        source_dir = Path(project_dir) if project_dir else None
+        if not source_dir or not source_dir.exists() or not source_dir.is_dir():
+            console.print(f"[red]Error: Invalid source directory: {project_dir}[/red]")
             sys.exit(1)
         
         result = runner.analyze_project(
@@ -410,10 +423,10 @@ def agent_main(project_dir=None):
 
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
-        import traceback
-        traceback.print_exc()
+        print(traceback.print_exc())
         sys.exit(1)
 
 
 if __name__ == '__main__':
     agent_main('validator/projects/code4rena_mantra-dex_2025_03')
+    # agent_main()

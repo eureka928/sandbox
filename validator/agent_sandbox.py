@@ -6,9 +6,10 @@ import io
 import contextlib
 import traceback
 
-TIMEOUT_SECONDS = 120
-AGENT_FILE = "/app/agent.py"
-REPORT_FILE = "/app/report.json"
+TIMEOUT_SECONDS = 600
+AGENT_FILE = os.getenv("AGENT_FILE", "/app/agent.py")
+REPORT_FILE = os.getenv("REPORT_FILE", "/app/report.json")
+
 
 def run_agent(agent_file, queue):
     stdout_capture = io.StringIO()
@@ -24,7 +25,11 @@ def run_agent(agent_file, queue):
                 raise AttributeError("agent.py does not define an 'agent_main()' function")
 
             result = agent.agent_main()
+
             resp = {"success": True, "result": result}
+
+    except SystemExit as e:
+        resp = {"success": False, "error": f"Exited with code {e.code}"}
 
     except Exception as e:
         resp = {"success": False, "error": str(e)}
@@ -63,6 +68,7 @@ def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
     resp.setdefault("stderr", "")
 
     return resp
+
 
 if __name__ == "__main__":
     try:

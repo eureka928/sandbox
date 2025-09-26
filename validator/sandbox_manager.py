@@ -135,6 +135,10 @@ class SandboxManager:
                 (agent_filepath, '/app/agent.py'),
                 (project_code_dir, '/app/project_code'),
             ],
+            envs={
+                "JOB_ID": job_id,
+                "PROJECT_ID": project_id,
+            },
             detach=True,
         )
         docker.wait(container)

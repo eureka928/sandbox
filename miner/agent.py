@@ -81,7 +81,7 @@ class BaselineRunner:
         }
 
         headers = {
-            "x_job_id": self.project_id,
+            "x_job_id": self.project_id or "local",
             "x_project_id": self.job_id,
         }
 
@@ -380,6 +380,9 @@ def agent_main(project_dir=None):
         'model': "deepseek-ai/DeepSeek-V3.1"
     }
 
+    if not project_dir:
+        project_dir = "/app/project_code"
+
     console.print(Panel.fit(
         "[bold cyan]SCABENCH BASELINE RUNNER[/bold cyan]\n"
         f"[dim]Model: {config['model']}[/dim]\n",
@@ -389,9 +392,6 @@ def agent_main(project_dir=None):
     try:
         runner = BaselineRunner(config)
 
-        if runner.project_id:
-            project_dir = "/app/project_code"
-        
         source_dir = Path(project_dir) if project_dir else None
         if not source_dir or not source_dir.exists() or not source_dir.is_dir():
             console.print(f"[red]Error: Invalid source directory: {project_dir}[/red]")
@@ -415,7 +415,7 @@ def agent_main(project_dir=None):
             border_style="green"
         ))
 
-        return result.model_dump()
+        return result.model_dump(mode="json")
         
     except ValueError as e:
         console.print(f"[red]Configuration error: {e}[/red]")
@@ -428,5 +428,4 @@ def agent_main(project_dir=None):
 
 
 if __name__ == '__main__':
-    agent_main('validator/projects/code4rena_mantra-dex_2025_03')
-    # agent_main()
+    report = agent_main('validator/projects/code4rena_iq-ai_2025_03')

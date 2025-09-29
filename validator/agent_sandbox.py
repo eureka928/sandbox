@@ -4,6 +4,7 @@ import os
 import json
 import io
 import contextlib
+import pickle
 import traceback
 
 TIMEOUT_SECONDS = 600
@@ -26,7 +27,13 @@ def run_agent(agent_file, queue):
 
             result = agent.agent_main()
 
-            resp = {"success": True, "result": result}
+            try:
+                pickle.dumps(result)
+            except (pickle.PicklingError, AttributeError, TypeError) as e:
+                tb_str = traceback.format_exc()
+                resp = {"success": False, "error": f"Report serialization error: {e}: {tb_str}"}
+            else:
+                resp = {"success": True, "result": result}
 
     except SystemExit as e:
         resp = {"success": False, "error": f"Exited with code {e.code}"}
@@ -38,7 +45,6 @@ def run_agent(agent_file, queue):
         "stdout": stdout_capture.getvalue(),
         "stderr": stderr_capture.getvalue(),
     })
-
     queue.put(resp)
 
 def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
@@ -55,10 +61,9 @@ def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
             "error": "Timeout",
         }
 
-    elif not queue.empty():
-        resp = queue.get()
-
-    else:
+    try:
+        resp = queue.get(timeout=0.1)
+    except multiprocessing.queues.Empty:
         resp = {
             "success": False,
             "error": "No result returned",
@@ -85,4 +90,4 @@ if __name__ == "__main__":
         }
 
     with open(REPORT_FILE, "w") as f:
-        json.dump(result, f)
+        json.dump(result, f, indent=2)

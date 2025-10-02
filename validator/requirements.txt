@@ -2,3 +2,4 @@ langchain==0.3.27
 langchain-core==0.3.76
 requests==2.32.5
 rich==14.1.0
+llm>=0.1

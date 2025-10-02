@@ -249,6 +249,20 @@ class SandboxManager:
                         'stdout': report_data.get('stdout', ''),
                         'stderr': report_data.get('stderr', '')
                     }
+                    # Persist per-project scoring summary with found=0 on failure
+                    try:
+                        expected_findings = benchmark_map.get(current_project_id, [])
+                        project_summary = {
+                            'project': current_project_id,
+                            'timestamp': report_data.get('result', {}).get('timestamp') or '',
+                            'expected': len(expected_findings),
+                            'found': 0
+                        }
+                        summary_path = report_file.parent / "scoring_summary.json"
+                        with open(summary_path, 'w') as sf:
+                            json.dump(project_summary, sf, indent=2)
+                    except Exception as e:
+                        logger.error(f"Failed to write failure scoring summary for {current_project_id}: {str(e)}")
                     continue
                 
                 # Extract findings from the report
@@ -333,6 +347,20 @@ class SandboxManager:
                     'status': 'error',
                     'error': str(e)
                 }
+                # Persist per-project scoring summary with found=0 on error
+                try:
+                    expected_findings = benchmark_map.get(current_project_id, [])
+                    project_summary = {
+                        'project': current_project_id,
+                        'timestamp': '',
+                        'expected': len(expected_findings),
+                        'found': 0
+                    }
+                    summary_path = report_file.parent / "scoring_summary.json"
+                    with open(summary_path, 'w') as sf:
+                        json.dump(project_summary, sf, indent=2)
+                except Exception as e2:
+                    logger.error(f"Failed to write error scoring summary for {current_project_id}: {str(e2)}")
         
         # Log summary
         successful_scorings = sum(1 for r in scoring_results.values() if r.get('status') == 'scored')
@@ -370,6 +398,6 @@ if __name__ == '__main__':
     # score = m.eval_jobs(reports_dir)
     
     # Or evaluate a specific project (uncomment and modify the project_id)
-    score = m.eval_jobs(reports_dir, project_id="cantina_smart-contract-audit-of-tn-contracts_2025_08")
+    score = m.eval_jobs(reports_dir)
     
     print(f"Scoring results: {score}")

@@ -85,12 +85,21 @@ class BaselineRunner:
             "x_project_id": self.job_id,
         }
 
-        resp = requests.post(
-            f"{self.inference_api}/inference",
-            headers=headers,
-            json=payload,
-        )
-        resp.raise_for_status()
+        try:
+            resp = requests.post(
+                f"{self.inference_api}/inference",
+                headers=headers,
+                json=payload,
+            )
+            resp.raise_for_status()
+
+        except requests.exceptions.HTTPError as e:
+            console.print(f"Inference Proxy Error: {e} {resp.json()}")
+            raise
+
+        except requests.exceptions.RequestException as e:
+            console.print(f"Inference Error: {e} {resp.json()}")
+            raise
 
         return resp.json()
 

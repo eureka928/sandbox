@@ -9,7 +9,7 @@ import traceback
 import tempfile
 import shutil
 
-TIMEOUT_SECONDS = 600
+TIMEOUT_SECONDS = 20 * 60
 AGENT_FILE = os.getenv("AGENT_FILE", "/app/agent.py")
 REPORT_FILE = os.getenv("REPORT_FILE", "/app/report.json")
 QUEUE_TIMEOUT = 30  # Timeout for queue operations

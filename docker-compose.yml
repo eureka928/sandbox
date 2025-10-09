@@ -1,6 +1,7 @@
 services:
   validator:
     build: .
+    restart: unless-stopped
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./validator/jobs:/app/validator/jobs

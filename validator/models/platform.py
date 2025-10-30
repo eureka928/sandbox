@@ -1,0 +1,50 @@
+from datetime import datetime
+from pydantic import BaseModel
+
+
+class JobRun(BaseModel):
+    id: int
+    job_id: int
+    validator_id: int
+    status: str
+    started_at: datetime | None
+    completed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentExecution(BaseModel):
+    validator_id: int
+    job_run_id: int
+    project: str
+    success: bool
+    report: dict | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+    error: str | None = None
+    status: str
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    created_at: datetime = datetime.utcnow()
+    updated_at: datetime = datetime.utcnow()
+
+
+class AgentEvaluation(BaseModel):
+    id: int | None = None
+    agent_execution_id: int
+    status: str
+    project: str
+    timestamp: datetime
+    total_expected: int
+    total_found: int
+    true_positives: int
+    false_negatives: int
+    false_positives: int
+    detection_rate: float
+    precision: float
+    f1_score: float
+
+    matched_findings: list | None = None
+    missed_findings: list | None = None
+    extra_findings: list | None = None
+    undecided_findings: list | None = None

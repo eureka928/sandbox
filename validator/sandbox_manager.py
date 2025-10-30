@@ -39,17 +39,9 @@ HOST_CWD = os.getenv("HOST_CWD", '.')
 VALIDATOR_DIR = os.path.normpath('validator')
 HOST_PROJECTS_DIR = os.path.abspath(os.path.join(HOST_CWD, VALIDATOR_DIR, 'projects'))
 
-
 PLATFORM_URL = os.getenv("PLATFORM_URL")
 PLATFORM_API_KEY = os.getenv("PLATFORM_API_KEY")
 PLATFORM_CLIENT = PlatformClient(PLATFORM_URL, PLATFORM_API_KEY)
-
-
-@dataclass
-class Job:
-    job_id: int
-    validator_id: int
-    agent_id: int
 
 
 class SandboxManager:
@@ -77,6 +69,7 @@ class SandboxManager:
                 self.process_job_run(job_run)
 
             else:
+                logger.info("No job runs available")
                 time.sleep(60)
 
     def build_images(self):
@@ -123,26 +116,35 @@ class SandboxManager:
         project_ids = [project["project_id"] for project in projects]
         return project_ids
 
-    def process_job_run(self, job_run, agent_filepath='agent.py', skip_run=False):
+    def process_job_run(self, job_run, skip_run=False):
         logger.info(f"[J:{job_run.job_id}|JR:{job_run.id}] Processing job run")
+
+        PLATFORM_CLIENT.start_job_run(job_run.id)
+
         job_run_dir = os.path.join(self.all_jobs_dir, f"job_run_{job_run.id}")
         job_run_reports_dir = os.path.join(job_run_dir, "reports")
         os.makedirs(job_run_reports_dir, exist_ok=True)
 
         if self.is_local:
             agent_filepath = f"{HOST_CWD}/miner/agent.py"
+            agent_filepath = os.path.abspath(agent_filepath)
 
-        if not agent_filepath:
-            # TODO: download agent file
-            pass
+        else:
+            agent_code = PLATFORM_CLIENT.get_job_run_code(job_run_id=job_run.id)
+            agent_filepath_rel = os.path.join(job_run_dir, 'agent.py')
+            with open(agent_filepath_rel, "w", encoding="utf-8") as f:
+                f.write(agent_code)
 
-        agent_filepath = os.path.abspath(agent_filepath)
+            agent_filepath = os.path.join(HOST_CWD, agent_filepath_rel)
 
         project_ids = self.get_project_ids(self.projects_config_filepath)
 
         for project_id in project_ids:
             executor = AgentExecutor(job_run, agent_filepath, project_id, job_run_reports_dir)
             executor.run()
+
+        # TODO: Check if finished successfully or part-fail
+        PLATFORM_CLIENT.complete_job_run(job_run.id)
 
 
 class AgentExecutor:
@@ -190,12 +192,10 @@ class AgentExecutor:
             self.run_project()
             self.agent_execution_id = self.submit_agent_execution()
 
-        self.eval_job_runs()
+        if not SKIP_EVALUATION:
+            self.eval_job_runs()
 
     def run_project(self):
-        if SKIP_EXECUTION:
-            return
-
         sandbox_container = SANDBOX_CONTAINER_TMPL.format(
             job_id=self.job_run.job_id,
             job_run_id=self.job_run.id,
@@ -247,7 +247,6 @@ class AgentExecutor:
             report_dict = json.load(f)
 
         report_dict['validator_id'] = self.job_run.validator_id
-        report_dict['agent_id'] = AGENT_ID # TODO: get from agent call for code
         report_dict['job_run_id'] = self.job_run.id
         report_dict['project'] = self.project_id
         report_dict['status'] = 'success'
@@ -265,6 +264,10 @@ class AgentExecutor:
             return
 
     def submit_agent_evaluation(self, project_scoring_results):
+        if not self.agent_execution_id:
+            self.logger.info("Not running from agent execution. Skipping submit evaluation")
+            return
+
         scoring_data = {}
         scoring_data['agent_execution_id'] = self.agent_execution_id
         scoring_data['status'] = project_scoring_results['status']
@@ -274,7 +277,8 @@ class AgentExecutor:
 
         try:
             resp = PLATFORM_CLIENT.submit_agent_evaluation(agent_evaluation)
-            return resp['id']
+            agent_evaluation_id = resp['id']
+            return agent_evaluation_id
 
         except Exception as e:
             self.logger.exception(f"Error submitting agent execution: {e}")
@@ -493,7 +497,7 @@ class AgentExecutor:
         return scoring_results
 
 if __name__ == '__main__':
-    m = SandboxManager(is_local=True)
+    m = SandboxManager(is_local=False)
     m.run()
 
     # agent_filepath = f"{HOST_CWD}/miner/agent.py"

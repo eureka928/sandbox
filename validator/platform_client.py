@@ -1,5 +1,4 @@
 import base64
-import os
 import json
 import secrets
 import time
@@ -10,18 +9,32 @@ import requests
 from bittensor_wallet import Wallet
 
 from config import settings
-from validator.models.platform import JobRun, AgentExecution, AgentEvaluation, AgentCode, User, MockJobRun
+from validator.models.platform import (
+    JobRun,
+    AgentExecution,
+    AgentEvaluation,
+    AgentCode,
+    User,
+    MockJobRun,
+)
 
 
 class PlatformError(Exception):
-    def __init__(self, message: str, status_code: int | None = None, details: Any | None = None):
+    def __init__(
+        self, message: str, status_code: int | None = None, details: Any | None = None
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.details = details
 
 
 class APIPlatformClient:
-    def __init__(self, base_url: str | None = None, timeout: int = 10, wallet_name: str | None = None):
+    def __init__(
+        self,
+        base_url: str | None = None,
+        timeout: int = 10,
+        wallet_name: str | None = None,
+    ):
         self.base_url = (base_url or settings.platform_url).rstrip("/")
         self.timeout = timeout
         self.set_wallet(wallet_name)
@@ -39,10 +52,10 @@ class APIPlatformClient:
             "nonce": secrets.token_hex(16),
             "domain": settings.app_url,
             "iat": iat,
-            "exp": exp
+            "exp": exp,
         }
 
-        payload_json = json.dumps(payload, separators=(',', ':'), sort_keys=True)
+        payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
         signature_bytes = hotkey.sign(payload_json.encode())
         payload_b64 = base64.urlsafe_b64encode(payload_json.encode()).decode()
         sig_b64 = base64.urlsafe_b64encode(signature_bytes).decode()
@@ -62,7 +75,9 @@ class APIPlatformClient:
         headers: dict[str, str] = {}
         if authenticate:
             if not self.hotkey:
-                raise ValueError("Wallet name must be provided via argument or WALLET_NAME environment variable.")
+                raise ValueError(
+                    "Wallet name must be provided via argument or WALLET_NAME environment variable."
+                )
 
             token = self._create_wallet_token(self.hotkey)
             headers["Authorization"] = f"Bearer {token}"
@@ -103,13 +118,13 @@ class APIPlatformClient:
             raise PlatformError(f"Expected JSON response from {url}, got invalid JSON.")
 
     def get_projects(self):
-        endpoint = f"projects/"
-        resp = self._call_api('get', endpoint)
+        endpoint = "projects/"
+        resp = self._call_api("get", endpoint)
         return resp
 
     def get_next_job_run(self, validator_id: int):
         endpoint = f"jobs/runs/validator/{validator_id}"
-        resp = self._call_api('get', endpoint)
+        resp = self._call_api("get", endpoint)
         if not resp:
             return
 
@@ -118,22 +133,22 @@ class APIPlatformClient:
 
     def get_job_run_code(self, job_run_id: int):
         endpoint = f"jobs/runs/{job_run_id}/code"
-        resp = self._call_api('get', endpoint)
-        return resp['code']
+        resp = self._call_api("get", endpoint)
+        return resp["code"]
 
     def get_job_run_agent(self, job_run_id: int):
         endpoint = f"jobs/runs/{job_run_id}/agent"
-        resp = self._call_api('get', endpoint)
+        resp = self._call_api("get", endpoint)
         return resp
 
     def submit_agent_execution(self, agent_execution: AgentExecution) -> dict:
-        endpoint = f"agents/execution/"
+        endpoint = "agents/execution/"
         payload = agent_execution.model_dump(mode="json")
         resp = self._call_api("post", endpoint, json=payload, authenticate=True)
         return resp
 
     def submit_agent_evaluation(self, agent_evaluation: AgentEvaluation) -> dict:
-        endpoint = f"agents/evaluation/"
+        endpoint = "agents/evaluation/"
         payload = agent_evaluation.model_dump(mode="json")
         resp = self._call_api("post", endpoint, json=payload, authenticate=True)
         return resp
@@ -143,7 +158,7 @@ class APIPlatformClient:
         resp = self._call_api("post", endpoint, authenticate=True)
         return resp
 
-    def complete_job_run(self, job_run_id: int, status='success') -> dict:
+    def complete_job_run(self, job_run_id: int, status="success") -> dict:
         endpoint = f"jobs/runs/{job_run_id}/complete"
         payload = {
             "status": status,
@@ -152,19 +167,19 @@ class APIPlatformClient:
         return resp
 
     def submit_agent(self, agent_code: AgentCode) -> dict:
-        endpoint = f"agents/submit/"
+        endpoint = "agents/submit/"
         payload = agent_code.model_dump(mode="json")
         resp = self._call_api("post", endpoint, json=payload, authenticate=True)
         return resp
 
     def create_user(self, user: User) -> dict:
-        endpoint = f"users/"
+        endpoint = "users/"
         payload = user.model_dump(mode="json")
         resp = self._call_api("post", endpoint, json=payload, authenticate=True)
         return resp
 
     def get_current_validator(self) -> dict:
-        endpoint = f"users/validators/me"
+        endpoint = "users/validators/me"
         resp = self._call_api("get", endpoint, authenticate=True)
         return resp
 
@@ -172,7 +187,8 @@ class APIPlatformClient:
 class MockPlatformClient:
     def __getattr__(self, name):
         def _method(*args, **kwargs):
-            return {'id': 1}
+            return {"id": 1}
+
         return _method
 
     def get_next_job_run(self, validator_id: int):
@@ -200,6 +216,7 @@ class PlatformClient:
     Forwards all args/kwargs transparently to the underlying client,
     while reserving `is_local` as a keyword-only argument.
     """
+
     def __init__(self, *args, is_local=False, **kwargs):
         if is_local:
             self._client = MockPlatformClient(*args, **kwargs)

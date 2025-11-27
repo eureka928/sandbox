@@ -16,8 +16,6 @@ from pydantic import BaseModel
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 from rich.panel import Panel
-from rich.table import Table
-from rich import box
 
 
 console = Console()
@@ -208,7 +206,7 @@ class BaselineRunner:
             if vulnerabilities:
                 console.print(f"[green]  → Found {len(vulnerabilities.vulnerabilities)} vulnerabilities[/green]")
             else:
-                console.print(f"[yellow]  → No vulnerabilities found[/yellow]")
+                console.print("[yellow]  → No vulnerabilities found[/yellow]")
 
             input_tokens = response.get('input_tokens', 0)
             output_tokens = response.get('output_tokens', 0)
@@ -235,7 +233,7 @@ class BaselineRunner:
         Returns:
             AnalysisResult with vulnerabilities
         """
-        console.print(f"\n[bold cyan]Analyzing project[/bold cyan]")
+        console.print("\n[bold cyan]Analyzing project[/bold cyan]")
         
         # Find files to analyze
         if file_patterns:
@@ -261,7 +259,7 @@ class BaselineRunner:
         ]
 
         if not files:
-            console.print(f"[yellow]No files found to analyze[/yellow]")
+            console.print("[yellow]No files found to analyze[/yellow]")
             return AnalysisResult(
                 project=project_name,
                 timestamp=datetime.now().isoformat(),

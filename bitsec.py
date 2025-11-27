@@ -58,9 +58,6 @@ def create_user(
     is_miner: bool = True,
 ) -> None:
     """Register a miner or validator (depending on role)."""
-
-    role = "MINER" if is_miner else "VALIDATOR"
-
     user = User(
         email=email,
         name=name,

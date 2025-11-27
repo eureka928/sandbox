@@ -21,7 +21,7 @@ def get_result_size(result):
     """Estimate the size of a result object in bytes."""
     try:
         return len(pickle.dumps(result))
-    except:
+    except Exception:
         return len(json.dumps(result, default=str))
 
 
@@ -60,7 +60,7 @@ def run_agent(agent_file, queue, temp_dir):
 
     try:
         with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
-            print(f"[AGENT] Loading agent module...")
+            print("[AGENT] Loading agent module...")
             spec = importlib.util.spec_from_file_location("agent", agent_file)
             agent = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(agent)
@@ -68,7 +68,7 @@ def run_agent(agent_file, queue, temp_dir):
             if not hasattr(agent, "agent_main"):
                 raise AttributeError("agent.py does not define an 'agent_main()' function")
 
-            print(f"[AGENT] Starting agent_main() execution...")
+            print("[AGENT] Starting agent_main() execution...")
             result = agent.agent_main()
             print(f"[AGENT] agent_main() completed, result type: {type(result)}")
 
@@ -124,10 +124,10 @@ def run_agent(agent_file, queue, temp_dir):
                 # Clean up temp file
                 try:
                     os.unlink(temp_file)
-                except:
+                except Exception:
                     pass
         else:
-            print(f"[QUEUE] Failed to save result to file")
+            print("[QUEUE] Failed to save result to file")
             error_resp = {"success": False, "error": "Failed to save large result to file", "stdout": stdout_content, "stderr": stderr_content}
             try:
                 queue.put(error_resp, timeout=QUEUE_TIMEOUT)
@@ -137,21 +137,21 @@ def run_agent(agent_file, queue, temp_dir):
         # Result is small enough for queue
         try:
             queue.put(resp, timeout=QUEUE_TIMEOUT)
-            print(f"[QUEUE] Successfully put result in queue")
+            print("[QUEUE] Successfully put result in queue")
         except Exception as e:
             print(f"[QUEUE] ERROR putting result in queue: {e}")
             try:
                 error_resp = {"success": False, "error": f"Queue put failed: {e}", "stdout": stdout_content, "stderr": stderr_content}
                 queue.put(error_resp, timeout=QUEUE_TIMEOUT)
-                print(f"[QUEUE] Put error response in queue")
+                print("[QUEUE] Put error response in queue")
             except Exception as e2:
                 print(f"[QUEUE] CRITICAL: Could not put anything in queue: {e2}")
     
-    print(f"[AGENT] Process completed")
+    print("[AGENT] Process completed")
 
 def run_agent_direct(agent_file):
     """Run agent directly without multiprocessing for debugging."""
-    print(f"[DIRECT] Running agent directly (no multiprocessing)")
+    print("[DIRECT] Running agent directly (no multiprocessing)")
     stdout_capture = io.StringIO()
     stderr_capture = io.StringIO()
     resp = None
@@ -200,9 +200,9 @@ def run_agent_direct(agent_file):
 def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
     """Try direct execution first, fallback to multiprocessing."""
     if FORCE_MULTIPROCESSING:
-        print(f"[TIMEOUT] FORCE_MULTIPROCESSING=true, skipping direct execution")
+        print("[TIMEOUT] FORCE_MULTIPROCESSING=true, skipping direct execution")
     else:
-        print(f"[TIMEOUT] Attempting direct execution first...")
+        print("[TIMEOUT] Attempting direct execution first...")
         
         try:
             resp = run_agent_direct(agent_file)
@@ -212,7 +212,7 @@ def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
             print(f"[TIMEOUT] Direct execution failed: {e}, falling back to multiprocessing")
     
     # Fallback to multiprocessing with file-based communication for large results
-    print(f"[TIMEOUT] Using multiprocessing fallback...")
+    print("[TIMEOUT] Using multiprocessing fallback...")
     
     # Create temporary directory for large results
     temp_dir = tempfile.mkdtemp(prefix="agent_sandbox_")
@@ -225,7 +225,7 @@ def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
         print(f"[TIMEOUT] Starting multiprocessing with {timeout_seconds}s timeout...")
         process.start()
         
-        print(f"[TIMEOUT] Waiting for process to complete...")
+        print("[TIMEOUT] Waiting for process to complete...")
         process.join(timeout_seconds)
 
         if process.is_alive():
@@ -237,7 +237,7 @@ def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
                 "error": "Agent timeout",
             }
         else:
-            print(f"[QUEUE] Getting result from queue...")
+            print("[QUEUE] Getting result from queue...")
             try:
                 resp = queue.get(timeout=QUEUE_TIMEOUT)
                 print(f"[QUEUE] Got result from queue: {resp.get('success', 'unknown')}")
@@ -249,18 +249,18 @@ def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
                     file_result = load_result_from_file(result_file)
                     if file_result:
                         resp = file_result
-                        print(f"[FILE] Successfully loaded result from file")
+                        print("[FILE] Successfully loaded result from file")
                     else:
                         resp = {"success": False, "error": "Failed to load result from file"}
                     
                     # Clean up temp file
                     try:
                         os.unlink(result_file)
-                    except:
+                    except Exception:
                         pass
                         
             except multiprocessing.queues.Empty:
-                print(f"[QUEUE] Queue is empty, no result returned")
+                print("[QUEUE] Queue is empty, no result returned")
                 resp = {
                     "success": False,
                     "error": "No result returned",
@@ -293,7 +293,7 @@ if __name__ == "__main__":
     except Exception as e:
         result = {
             "success": False,
-            "error": f"Sandbox error",
+            "error": "Sandbox error",
             "exc": str(e),
             "traceback": traceback.format_exc(),
             "stdout": "",

@@ -1,21 +1,19 @@
 import json
 import logging
 import os
-import requests
 import time
-from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 from python_on_whales import docker, Network
-from python_on_whales.exceptions import DockerException, NoSuchContainer, NoSuchNetwork
+from python_on_whales.exceptions import DockerException, NoSuchNetwork
 from python_on_whales.utils import run
 
 from config import settings
 from loggers.logger import get_logger
-from validator.models.platform import JobRun, AgentExecution, AgentEvaluation
-from validator.platform_client import PlatformClient
+from validator.models.platform import AgentExecution, AgentEvaluation
+from validator.platform_client import PlatformClient, PlatformError
 from validator.scorer import ScaBenchScorerV2
 
 
@@ -37,8 +35,6 @@ HOST_PROJECTS_DIR = os.path.abspath(os.path.join(HOST_CWD, VALIDATOR_DIR, 'proje
 class SandboxManager:
     def __init__(self, is_local=False):
         self.proxy_docker_dir = os.path.join(VALIDATOR_DIR, 'proxy')
-        self.validator_docker_dir = VALIDATOR_DIR
-
         self.projects_dir = os.path.join(VALIDATOR_DIR, 'projects')
         self.all_jobs_dir = os.path.join(VALIDATOR_DIR, 'jobs')
 
@@ -102,7 +98,7 @@ class SandboxManager:
         project_keys = [p['project_key'] for p in projects]
         return project_keys
 
-    def process_job_run(self, job_run, skip_run=False):
+    def process_job_run(self, job_run):
         logger.info(f"[J:{job_run.job_id}|JR:{job_run.id}] Processing job run")
 
         self.platform_client.start_job_run(job_run.id)
@@ -158,6 +154,7 @@ class AgentExecutor:
 
         self.agent_execution_id: int | None = None
         self.agent_evaluation_id: int | None = None
+        self.started_at = None
 
         self.init_logger()
 
@@ -167,7 +164,7 @@ class AgentExecutor:
 
         def process(msg, kwargs):
             return f"{log_prefix} {msg}", kwargs
-        
+
         self.logger.process = process
 
     def remove_container(self, container_name):
@@ -199,7 +196,7 @@ class AgentExecutor:
 
         project_image_tag = PROJECT_IMAGE_TAG_TMPL.format(project_key=self.project_key)
 
-        self.logger.info(f"Starting container")
+        self.logger.info("Starting container")
         container = docker.run(
             project_image_tag,
             name=sandbox_container,
@@ -221,7 +218,7 @@ class AgentExecutor:
 
         except DockerException as e:
             if e.return_code == 1 and "does not exist" in str(e):
-                logger.error(f"Report not found in container")
+                logger.error("Report not found in container")
             else:
                 raise
 
@@ -230,8 +227,8 @@ class AgentExecutor:
     def submit_agent_execution(self):
         report_filepath = os.path.join(self.project_report_dir, 'report.json')
         if not Path(report_filepath).is_file():
-            self.logger.error(f"Report not found")
-            return # TODO: submit with error
+            self.logger.error("Report not found")
+            return None # TODO: submit with error
 
         with open(report_filepath, "r", encoding="utf-8") as f:
             report_dict = json.load(f)
@@ -247,16 +244,21 @@ class AgentExecutor:
 
         try:
             resp = self.platform_client.submit_agent_execution(agent_execution)
-            return resp['id']
 
-        except Exception as e:
-            self.logger.exception(f"Error submitting agent execution: {e}")
-            return
+            execution_id = resp.get('id')
+            if not execution_id:
+                self.logger.warning("Execution ID not received")
+
+            return execution_id
+
+        except PlatformError as e:
+            self.logger.exception(f"Platform submission failed for agent execution: {e}")
+            return None
 
     def submit_agent_evaluation(self, project_scoring_results):
         if not self.agent_execution_id:
             self.logger.info("Not running from agent execution. Skipping submit evaluation")
-            return
+            return None
 
         scoring_data = {}
         scoring_data['agent_execution_id'] = self.agent_execution_id
@@ -267,12 +269,15 @@ class AgentExecutor:
 
         try:
             resp = self.platform_client.submit_agent_evaluation(agent_evaluation)
-            agent_evaluation_id = resp['id']
-            return agent_evaluation_id
+            evaluation_id = resp.get('id')
+            if not evaluation_id:
+                self.logger.warning("Evaluation ID not received")
 
-        except Exception as e:
-            self.logger.exception(f"Error submitting agent execution: {e}")
-            return
+            return evaluation_id
+
+        except PlatformError as e:
+            self.logger.exception(f"Platform submission failed for agent evaluation: {e}")
+            return None
 
     def eval_job_runs(self):
         """
@@ -295,7 +300,7 @@ class AgentExecutor:
             logger.error(f"Benchmark file not found: {benchmark_file}")
             return {}
 
-        with open(benchmark_file, 'r') as f:
+        with open(benchmark_file, 'r', encoding="utf-8") as f:
             benchmark_data = json.load(f)
 
         # Create a mapping of project_key to expected vulnerabilities
@@ -327,12 +332,12 @@ class AgentExecutor:
             if specific_report.exists():
                 report_files = [specific_report]
             else:
-                logger.error(f"Report not found for project {project_key}")
+                logger.error(f"Report not found for project {self.project_key}")
                 return {}
         else:
             # Look for all report.json files
             report_files = list(reports_path.glob("*/report.json"))
-        
+
         if not report_files:
             logger.warning(f"No report.json files found in {reports_path}")
             return {}
@@ -347,12 +352,15 @@ class AgentExecutor:
 
             try:
                 # Load the report
-                with open(report_file, 'r') as f:
+                with open(report_file, 'r', encoding="utf-8") as f:
                     report_data = json.load(f)
 
                 # Check if the report contains successful findings
                 if not report_data.get('success', False):
-                    logger.warning(f"Report for {current_project_key} indicates failure: {report_data.get('error', 'Unknown error')}")
+                    logger.warning(
+                        f"Report for {current_project_key} indicates failure: "
+                        f"{report_data.get('error', 'Unknown error')}"
+                    )
                     # Create a mock result for failed reports
                     scoring_results[current_project_key] = {
                         'status': 'failed',
@@ -370,7 +378,7 @@ class AgentExecutor:
                             'found': 0
                         }
                         summary_path = report_file.parent / "scoring_summary.json"
-                        with open(summary_path, 'w') as sf:
+                        with open(summary_path, 'w', encoding="utf-8") as sf:
                             json.dump(project_summary, sf, indent=2)
                     except Exception as e:
                         logger.error(f"Failed to write failure scoring summary for {current_project_key}: {str(e)}")
@@ -403,7 +411,10 @@ class AgentExecutor:
                     }
                     continue
 
-                logger.info(f"Scoring {current_project_key} with {len(expected_findings)} expected vulnerabilities and {len(tool_findings)} tool findings")
+                logger.info(
+                    f"Scoring {current_project_key} with {len(expected_findings)} expected vulnerabilities"
+                    f"and {len(tool_findings)} tool findings"
+                )
 
                 # Score the project
                 result = scorer.score_project(
@@ -439,7 +450,9 @@ class AgentExecutor:
 
                 # Concise summary for CI/logs: true positives vs expected
                 logger.info(
-                    f"Scoring Project: {current_project_key} | Found: {result.true_positives} | Expected: {result.total_expected}"
+                    f"Scoring Project: {current_project_key} | "
+                    f"Found: {result.true_positives} | "
+                    f"Expected: {result.total_expected}"
                 )
 
                 # Persist per-project scoring summary next to report.json
@@ -451,11 +464,11 @@ class AgentExecutor:
                         'found': result.true_positives
                     }
                     summary_path = report_file.parent / "scoring_summary.json"
-                    with open(summary_path, 'w') as sf:
+                    with open(summary_path, 'w', encoding="utf-8") as sf:
                         json.dump(project_summary, sf, indent=2)
                 except Exception as e:
                     logger.error(f"Failed to write scoring summary for {current_project_key}: {str(e)}")
-                
+
             except Exception as e:
                 logger.error(f"Error evaluating {current_project_key}: {str(e)}")
                 scoring_results[current_project_key] = {
@@ -472,7 +485,7 @@ class AgentExecutor:
                         'found': 0
                     }
                     summary_path = report_file.parent / "scoring_summary.json"
-                    with open(summary_path, 'w') as sf:
+                    with open(summary_path, 'w', encoding="utf-8") as sf:
                         json.dump(project_summary, sf, indent=2)
                 except Exception as e2:
                     logger.error(f"Failed to write error scoring summary for {current_project_key}: {str(e2)}")
@@ -482,12 +495,18 @@ class AgentExecutor:
         errors = sum(1 for r in scoring_results.values() if r.get('status') == 'error')
         no_benchmark = sum(1 for r in scoring_results.values() if r.get('status') == 'no_benchmark')
 
-        logger.info(f"Evaluation complete: {successful_scorings} scored, {failed_reports} failed, {errors} errors, {no_benchmark} no benchmark data")
+        logger.info(
+            f"Evaluation complete: "
+            f"{successful_scorings} scored, "
+            f"{failed_reports} failed, "
+            f"{errors} errors, "
+            f"{no_benchmark} no benchmark data"
+        )
 
         return scoring_results
 
 if __name__ == '__main__':
-    local = settings.local
-    logger.info(f"LOCAL: {local}")
-    m = SandboxManager(is_local=local)
+    LOCAL = settings.local
+    logger.info(f"LOCAL: {LOCAL}")
+    m = SandboxManager(is_local=LOCAL)
     m.run()

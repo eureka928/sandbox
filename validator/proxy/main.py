@@ -1,10 +1,10 @@
-from fastapi import FastAPI, Request, Header, HTTPException
+from fastapi import FastAPI, Header
 import os
 import json
 import requests
 import time
 from loggers.logger import get_logger
-from models import InferenceRequest, InferenceResponse, Message
+from models import InferenceRequest, InferenceResponse
 
 
 logger = get_logger()

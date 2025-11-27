@@ -21,7 +21,6 @@ def download_zip(project, codebase):
     project_id = project["project_id"]
     repo_url = codebase["repo_url"]
     commit = codebase["commit"] or 'main'
-    repo_name = repo_url.rstrip("/").split("/")[-1]
 
     project_dir = os.path.join(PROJECTS_DIR, project_id)
     zip_path = os.path.join(PROJECTS_DIR, f"{project_dir}.zip")
@@ -103,4 +102,4 @@ def fetch_projects():
     for project in projects:
         init_project(project)
 
-    logger.info(f"Finished fetching")
+    logger.info("Finished fetching")

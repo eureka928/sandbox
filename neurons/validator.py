@@ -104,7 +104,7 @@ class Validator(BaseValidatorNeuron):
         await loop.run_in_executor(None, self.sandbox_manager.poll_job_run)
         await loop.run_in_executor(None, self.update_top_miner_scores)
 
-        time.sleep(60)
+        await asyncio.sleep(60)
 
         # TODO(developer): Rewrite this function based on your protocol definition.
         # return await forward(self)

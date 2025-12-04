@@ -127,6 +127,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.env.*
 
 # Spyder project settings
 .spyderproject
@@ -142,6 +143,7 @@ venv.bak/
 .mypy_cache/
 .dmypy.json
 dmypy.json
+.ruff_cache
 
 # Pyre type checker
 .pyre/
@@ -164,7 +166,9 @@ testing/
 # Editors
 .vscode/settings.json
 
-# Project files
-agent_report.json
+.DS_Store
+
+jobs/
 projects/
-validator/jobs/
+agent_report.json
+

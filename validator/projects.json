@@ -1,0 +1,58 @@
+[
+  {
+    "project_id": "code4rena_superposition_2025_01",
+    "name": "Superposition",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "Superposition_4528c9",
+        "repo_url": "https://github.com/code-423n4/2024-08-superposition",
+        "commit": "4528c9d2dbe1550d2660dac903a8246076044905",
+        "tree_url": "https://github.com/code-423n4/2024-08-superposition/tree/4528c9d2dbe1550d2660dac903a8246076044905",
+        "tarball_url": "https://github.com/code-423n4/2024-08-superposition/archive/4528c9d2dbe1550d2660dac903a8246076044905.tar.gz"
+      }
+    ]
+  },
+  {
+    "project_id": "code4rena_lambowin_2025_02",
+    "name": "Lambo.win",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "Lambo.win_main",
+        "repo_url": "https://github.com/code-423n4/2024-12-lambowin",
+        "commit": "main",
+        "tree_url": "https://github.com/code-423n4/2024-12-lambowin/tree/main",
+        "tarball_url": "https://github.com/code-423n4/2024-12-lambowin/archive/main.tar.gz"
+      }
+    ]
+  },
+  {
+    "project_id": "code4rena_loopfi_2025_02",
+    "name": "LoopFi",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "LoopFi_main",
+        "repo_url": "https://github.com/code-423n4/2024-10-loopfi",
+        "commit": "main",
+        "tree_url": "https://github.com/code-423n4/2024-10-loopfi/tree/main",
+        "tarball_url": "https://github.com/code-423n4/2024-10-loopfi/archive/main.tar.gz"
+      }
+    ]
+  },
+  {
+    "project_id": "code4rena_secondswap_2025_02",
+    "name": "SecondSwap",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "SecondSwap_214849",
+        "repo_url": "https://github.com/code-423n4/2024-12-secondswap",
+        "commit": "214849c3517eb26b31fe194bceae65cb0f52d2c0",
+        "tree_url": "https://github.com/code-423n4/2024-12-secondswap/tree/214849c3517eb26b31fe194bceae65cb0f52d2c0",
+        "tarball_url": "https://github.com/code-423n4/2024-12-secondswap/archive/214849c3517eb26b31fe194bceae65cb0f52d2c0.tar.gz"
+      }
+    ]
+  }
+]

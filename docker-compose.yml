@@ -1,0 +1,16 @@
+services:
+  validator:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./jobs:/app/jobs
+      - "${HOME}/.bittensor/wallets/${WALLET_NAME}/hotkeys:/root/.bittensor/wallets/${WALLET_NAME}/hotkeys"
+    env_file: .env
+    environment:
+      - HOST_CWD=${PWD}
+      - PLATFORM_URL=http://host.docker.internal:8000
+      - PROXY_URL=http://host.docker.internal:8087
+      - LOCAL
+      # - SKIP_EXECUTION
+      # - SKIP_EVALUATION

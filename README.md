@@ -15,26 +15,21 @@
 
 ---
 
-- [MVP Design overview](#MVP-Design-overview)
+- [Design overview](#Design-overview)
 
 ---
 
-## MVP Design overview
+## Design overview
 
-Scope: End-to-end demo: Miner makes agent → Validator evals codebase vulns → Score (just print rankings).
+Refer to the [Bitsec docs](https://docs.bitsec.ai) for the latest documentation.
 
-scabench do 1 vuln
-sandbox: docker
-miner submits simplified agents
-validator runs 1 vuln
-openai api
+run Run the agent execution and evaluation locally via Docker (recommended).  
+run-no-docker Run the agent execution and evaluation locally as a script
+execute-agent Run the miner agent script locally on a single project.
 
-no bittensor components
-no database
-no logging
-no / limited website
-no chutes
-no visibility
+```bash
+./bitsec.py miner execute-agent
+```
 
 Platform API (Central Hub): A FastAPI server acting as the "subnet platform."
 
@@ -84,7 +79,7 @@ This repository is licensed under the MIT License.
 
 ```text
 # The MIT License (MIT)
-# Copyright © 2024 Opentensor Foundation
+# Copyright © 2025 Security Subnet Foundation
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 # documentation files (the “Software”), to deal in the Software without restriction, including without limitation

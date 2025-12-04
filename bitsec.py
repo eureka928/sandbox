@@ -68,13 +68,13 @@ def miner_create(
     name: str | None = Argument(None, help="Optional name"),
     wallet: str | None = Option(None, help="Bittensor wallet name"),
 ):
-    """Create a miner account."""
+    """Create a miner user on the platform (registers with hotkey)."""
     client = get_platform_client(wallet)
     create_user(email=email, name=name, client=client, is_miner=True)
 
 @miner_app.command("submit")
 def miner_submit(wallet: str | None = Option(None, help="Bittensor wallet name")):
-    """Submit the miner agent code."""
+    """Submit the miner agent code to the platform."""
     agent_path = Path("miner/agent.py")
     if not agent_path.exists():
         raise FileNotFoundError(agent_path)
@@ -88,6 +88,7 @@ def miner_submit(wallet: str | None = Option(None, help="Bittensor wallet name")
 
 @miner_app.command("run")
 def miner_run():
+    """Run the agent execution and evaluation locally via Docker (recommended)."""
     env = os.environ.copy()
     env["LOCAL"] = "true"
 
@@ -96,15 +97,14 @@ def miner_run():
 
 @miner_app.command("run-no-docker")
 def miner_run_no_docker():
+    """Run the agent execution and evaluation locally as a script"""
     os.environ["LOCAL"] = "true"
     manager = SandboxManager(is_local=True)
     manager.run()
 
 @miner_app.command("execute-agent")
 def miner_execute_agent():
-    """
-    Run the miner agent script locally on a single project
-    """
+    """Run the miner agent script locally on a single project."""
     cmd = [sys.executable, "miner/agent.py"]
     subprocess.run(cmd, env=os.environ.copy(), check=True)
 

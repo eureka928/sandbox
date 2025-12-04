@@ -31,6 +31,20 @@ execute-agent Run the miner agent script locally on a single project.
 ./bitsec.py miner execute-agent
 ```
 
+Agent file is in miner/agent.py
+
+project source files are fetched and stored in projects/
+
+```bash
+projects/
+```
+
+change project id in miner/agent.py to the project you want to run
+
+```
+report = agent_main('projects/code4rena_secondswap_2025_02', inference_api=inference_api)
+```
+
 Platform API (Central Hub): A FastAPI server acting as the "subnet platform."
 
 - Endpoint: /upload/agent (POST) – Accepts a single agent.py file upload. Validate it's Python, uses only stdlib (simple regex check). Store in local folder with metadata (e.g., miner_id as filename).

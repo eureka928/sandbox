@@ -15,15 +15,11 @@ logger = get_logger()
 
 PROXY_IMAGE_TAG = 'bitsec-proxy:latest'
 
-HOST_CWD = settings.host_cwd
-HOST_PROJECTS_DIR = os.path.abspath(os.path.join(HOST_CWD, settings.validator_dir, 'projects'))
-
 
 class SandboxManager:
     def __init__(self, is_local=False, wallet_name=None):
         self.proxy_docker_dir = os.path.join(settings.validator_dir, 'proxy')
-        self.projects_dir = os.path.join(settings.validator_dir, 'projects')
-        self.all_jobs_dir = os.path.join(settings.validator_dir, 'jobs')
+        self.all_jobs_dir = os.path.join(settings.host_cwd, 'jobs')
 
         self.platform_client = PlatformClient(is_local=is_local, wallet_name=wallet_name)
         self.validator = self.platform_client.get_current_validator()
@@ -101,7 +97,7 @@ class SandboxManager:
         agent = self.platform_client.get_job_run_agent(job_run_id=job_run.id)
 
         if self.is_local:
-            agent_filepath = f"{HOST_CWD}/miner/agent.py"
+            agent_filepath = f"{settings.host_cwd}/miner/agent.py"
             agent_filepath = os.path.abspath(agent_filepath)
 
         else:
@@ -109,7 +105,7 @@ class SandboxManager:
             with open(agent_filepath_rel, "w", encoding="utf-8") as f:
                 f.write(agent['code'])
 
-            agent_filepath = os.path.join(HOST_CWD, agent_filepath_rel)
+            agent_filepath = os.path.abspath(agent_filepath_rel)
 
         for project_key in agent['project_keys']:
             executor = AgentExecutor(
@@ -123,7 +119,6 @@ class SandboxManager:
 
         # TODO: Check if finished successfully or part-fail
         self.platform_client.complete_job_run(job_run.id)
-
 
 if __name__ == '__main__':
     LOCAL = settings.local

@@ -195,6 +195,9 @@ class APIPlatformClient:
 
 
 class MockPlatformClient:
+    def __init__(self, *args, **kwargs):
+        pass
+
     def __getattr__(self, name):
         def _method(*args, **kwargs):
             return {"id": 1}

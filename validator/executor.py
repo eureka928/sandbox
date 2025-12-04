@@ -156,6 +156,25 @@ class AgentExecutor:
         scoring_data['status'] = project_scoring_results['status']
         scoring_data.update(project_scoring_results['result'])
 
+        # Persist evaluation locally for inspection
+        evaluation_path = os.path.join(self.project_report_dir, "evaluation.json")
+        try:
+            with open(evaluation_path, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "agent_execution_id": scoring_data.get("agent_execution_id"),
+                        "project": scoring_data.get("project"),
+                        "status": str(scoring_data.get("status")),
+                        "result": project_scoring_results.get("result", {}),
+                    },
+                    f,
+                    default=str,
+                    indent=2,
+                )
+            self.logger.info(f"Saved evaluation to {evaluation_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to write evaluation file: {e}")
+
         agent_evaluation = AgentEvaluation.model_validate(scoring_data)
 
         try:
@@ -204,7 +223,6 @@ class AgentExecutor:
         scorer = ScaBenchScorerV2({
             "api_key": settings.chutes_api_key,
             "api_url": settings.proxy_url,
-            # "model": "gpt-4o",
             "debug": True,
             "verbose": True,
             "confidence_threshold": 0.75,

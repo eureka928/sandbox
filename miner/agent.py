@@ -3,6 +3,7 @@ import json
 import os
 import requests
 import sys
+import time
 import traceback
 from datetime import datetime
 from enum import Enum
@@ -16,6 +17,8 @@ from pydantic import BaseModel
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 from rich.panel import Panel
+
+from scripts.projects import fetch_projects
 
 
 console = Console()
@@ -62,10 +65,10 @@ class AnalysisResult(BaseModel):
 
 
 class BaselineRunner:
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(self, config: dict[str, Any] | None = None, inference_api: str = None):
         self.config = config or {}
         self.model = self.config['model']
-        self.inference_api = os.getenv('INFERENCE_API', "http://bitsec_proxy:8000")
+        self.inference_api = inference_api or os.getenv('INFERENCE_API', "http://bitsec_proxy:8000")
         self.project_id = os.getenv('PROJECT_ID', "local")
         self.job_id = os.getenv('JOB_ID', "local")
 
@@ -82,9 +85,11 @@ class BaselineRunner:
             "x_project_id": self.job_id,
         }
 
+        resp = None
         try:
+            inference_url = f"{self.inference_api}/inference"
             resp = requests.post(
-                f"{self.inference_api}/inference",
+                inference_url,
                 headers=headers,
                 json=payload,
             )
@@ -383,7 +388,7 @@ class BaselineRunner:
         return output_file
 
 
-def agent_main(project_dir=None):
+def agent_main(project_dir: str = None, inference_api: str = None):
     config = {
         'model': "deepseek-ai/DeepSeek-V3.1-Terminus"
     }
@@ -398,7 +403,7 @@ def agent_main(project_dir=None):
     ))
 
     try:
-        runner = BaselineRunner(config)
+        runner = BaselineRunner(config, inference_api)
 
         source_dir = Path(project_dir) if project_dir else None
         if not source_dir or not source_dir.exists() or not source_dir.is_dir():
@@ -436,4 +441,9 @@ def agent_main(project_dir=None):
 
 
 if __name__ == '__main__':
-    report = agent_main('validator/projects/code4rena_iq-ai_2025_03')
+    from validator.manager import SandboxManager
+    SandboxManager(is_local=True)
+    time.sleep(10) # wait for proxy to start
+    fetch_projects()
+    inference_api = 'http://localhost:8087'
+    report = agent_main('projects/code4rena_secondswap_2025_02', inference_api=inference_api)

@@ -8,29 +8,32 @@ from loggers.logger import get_logger
 
 logger = get_logger()
 
-PROJECTS_FILE = "projects.json"
-CURR_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECTS_DIR = f"{CURR_DIR}/projects"
+REPO_ROOT = os.path.abspath(os.getcwd())
+PROJECTS_FILE = os.path.join(REPO_ROOT, "miner", "projects.json")
+PROJECTS_DIR = os.path.join(REPO_ROOT, "projects")
 
 
-def download_zip(project, codebase):
+def download_zip(project):
     """
     Download the GitHub zip archive for a specific commit.
     Returns the path to the downloaded zip file.
     """
-    project_id = project["project_id"]
-    repo_url = codebase["repo_url"]
-    commit = codebase["commit"] or 'main'
+    project_key = project["project_key"]
+    repo_url = project.get("repo_url")
+    commit = project.get("commit") or "main"
 
-    project_dir = os.path.join(PROJECTS_DIR, project_id)
+    if not repo_url:
+        raise ValueError(f"Missing repo_url for project {project_key}")
+
+    project_dir = os.path.join(PROJECTS_DIR, project_key)
     zip_path = os.path.join(PROJECTS_DIR, f"{project_dir}.zip")
 
     if os.path.exists(project_dir):
-        logger.info(f"⏭️  Skipping download for {project_id} (already exists)")
+        logger.info(f"⏭️  Skipping download for {project_key} (already exists)")
         return zip_path
 
     zip_url = f"{repo_url}/archive/{commit}.zip"
-    logger.info(f"⬇️  Downloading {project_id} from {zip_url}...")
+    logger.info(f"⬇️  Downloading {project_key} from {zip_url}...")
 
     with requests.get(zip_url, stream=True) as r:
         r.raise_for_status()
@@ -46,12 +49,12 @@ def extract_zip(zip_path):
     Handles atomic extraction with a temporary folder.
     """
     project_dir = os.path.splitext(zip_path)[0]
-    project_id = os.path.basename(project_dir)
+    project_key = os.path.basename(project_dir)
     temp_dir = project_dir + "_tmp"
 
     # Skip if already extracted
     if os.path.exists(project_dir):
-        logger.info(f"⏭️  Skipping extraction for {project_id} (already exists)")
+        logger.info(f"⏭️  Skipping extraction for {project_key} (already exists)")
         
         if os.path.exists(zip_path):
             os.remove(zip_path)
@@ -80,22 +83,18 @@ def extract_zip(zip_path):
         logger.info(f"✅ Extracted into {project_dir}")
 
     except Exception as e:
-        logger.info(f"❌ Failed extraction for {project_id}: {e}")
+        logger.info(f"❌ Failed extraction for {project_key}: {e}")
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
 
 def init_project(project):
-    for codebase in project.get("codebases", []):
-        zip_path = download_zip(project, codebase)
-        extract_zip(zip_path)
+    zip_path = download_zip(project)
+    extract_zip(zip_path)
 
 def fetch_projects():
-    curr_dir = os.path.dirname(os.path.abspath(__file__))
-    projects_path = os.path.join(curr_dir, PROJECTS_FILE)
-
     os.makedirs(PROJECTS_DIR, exist_ok=True)
 
-    with open(projects_path, "r", encoding="utf-8") as f:
+    with open(PROJECTS_FILE, "r", encoding="utf-8") as f:
         projects = json.load(f)
 
     logger.info(f"Starting fetching for {len(projects)} projects")

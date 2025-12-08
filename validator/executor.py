@@ -288,6 +288,11 @@ class AgentExecutor:
                 f"Found: {result.true_positives} | "
                 f"Expected: {result.total_expected}"
             )
+            self.logger.info(
+                "Tokens | "
+                f"Input: {result.input_tokens} (cached: {result.cached_tokens}) | "
+                f"Output: {result.output_tokens}"
+            )
 
             return scoring_result
 

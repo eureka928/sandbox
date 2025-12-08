@@ -11,6 +11,7 @@ services:
     environment:
       - HOST_CWD=${PWD}
       - CHUTES_API_KEY
+      - PROXY_URL=http://host.docker.internal:8087
     command: >
       python -m neurons.validator
         --netuid ${NETUID}

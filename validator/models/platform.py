@@ -70,10 +70,10 @@ class UserRole(str, Enum):
     VALIDATOR = "validator"
 
 class User(BaseModel):
-    id: int | None
+    id: int | None = None
     email: str
     name: str | None = None
     role: UserRole
-    is_active: bool | None
-    is_active_validator: bool | None
+    is_active: bool = True
+    is_active_validator: bool = False
     hotkey: str | None = None

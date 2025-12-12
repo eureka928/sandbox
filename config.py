@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     chutes_api_key: str | None
 
     app_url: str = "bitsec.ai"
-    platform_url: str = "bitsec.ai"
+    platform_url: str = "https://bitsec.ai/"
 
     host_cwd: str = "."
     validator_dir: str = "validator"

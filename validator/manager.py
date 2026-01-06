@@ -59,19 +59,6 @@ class SandboxManager:
         self.process_job_run(job_run)
         return True
 
-    def poll_job_run(self):
-        """
-        Attempt to fetch and process a single job run.
-        Returns True if a job was processed, False otherwise.
-        """
-        job_run = self.platform_client.get_next_job_run(self.validator_id)
-        if not job_run:
-            logger.info("No job runs available")
-            return False
-
-        self.process_job_run(job_run)
-        return True
-
     def build_images(self):
         docker.build(
             self.proxy_docker_dir,

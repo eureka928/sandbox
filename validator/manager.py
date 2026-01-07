@@ -42,6 +42,12 @@ class SandboxManager:
                 break
 
     def poll_job_run(self):
+        if not self.is_local:
+            try:
+                self.platform_client.send_heartbeat()
+            except Exception as e:
+                logger.error(f"Failed to send heartbeat: {e}")
+
         retries = 10
         job_run = None
         for _ in range(retries):

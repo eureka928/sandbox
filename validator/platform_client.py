@@ -213,7 +213,7 @@ class APIPlatformClient:
         return resp
 
     def send_heartbeat(self) -> dict:
-        endpoint = "validators/heartbeat"
+        endpoint = "users/validators/heartbeat"
         payload = {
             "validator_version": __version__,
         }

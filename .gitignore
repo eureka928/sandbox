@@ -172,3 +172,8 @@ jobs/
 projects/
 agent_report.json
 
+# AI
+.claude/
+thoughts/
+
+

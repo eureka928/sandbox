@@ -10,6 +10,7 @@ from bittensor_wallet import Wallet
 from requests.adapters import HTTPAdapter, Retry
 
 from config import settings
+from version import __version__
 from validator.models.platform import (
     JobRun,
     AgentExecution,
@@ -209,6 +210,14 @@ class APIPlatformClient:
     def get_current_validator(self) -> dict:
         endpoint = "users/validators/me"
         resp = self._call_api("get", endpoint, authenticate=True)
+        return resp
+
+    def send_heartbeat(self) -> dict:
+        endpoint = "users/validators/heartbeat"
+        payload = {
+            "validator_version": __version__,
+        }
+        resp = self._call_api("post", endpoint, json=payload, authenticate=True)
         return resp
 
 

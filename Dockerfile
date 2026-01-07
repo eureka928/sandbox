@@ -9,7 +9,7 @@ RUN curl -fsSL https://get.docker.com -o get-docker.sh && \
 
 WORKDIR /app
 
-COPY requirements.txt config.py .
+COPY requirements.txt config.py version.py .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY validator/ validator/

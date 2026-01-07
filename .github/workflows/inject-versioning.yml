@@ -1,0 +1,41 @@
+name: inject-versioning
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write version info
+        run: |
+          BUILD_NUM=${{ github.run_number }}
+          GIT_SHA="${GITHUB_SHA::7}"
+          BUILD_DATE="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          echo "BUILD_NUM=${BUILD_NUM}" >> $GITHUB_ENV
+
+          cat > version.py <<EOF
+          __build_number__ = ${BUILD_NUM}
+          __git_sha__ = "${GIT_SHA}"
+          __build_date__ = "${BUILD_DATE}"
+          __version__ = "${BUILD_NUM}-${GIT_SHA}"
+          EOF
+
+      - name: Commit build metadata
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          git add version.py
+          git commit -m "[skip ci] increment to build ${BUILD_NUM}"
+          git push

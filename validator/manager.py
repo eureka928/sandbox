@@ -42,6 +42,12 @@ class SandboxManager:
                 break
 
     def poll_job_run(self):
+        if not self.is_local:
+            try:
+                self.platform_client.send_heartbeat()
+            except Exception as e:
+                logger.error(f"Failed to send heartbeat: {e}")
+
         retries = 10
         job_run = None
         for _ in range(retries):
@@ -52,19 +58,6 @@ class SandboxManager:
                 logger.error(f"Error fetching job run: {e}")
                 time.sleep(delay)
 
-        if not job_run:
-            logger.info("No job runs available")
-            return False
-
-        self.process_job_run(job_run)
-        return True
-
-    def poll_job_run(self):
-        """
-        Attempt to fetch and process a single job run.
-        Returns True if a job was processed, False otherwise.
-        """
-        job_run = self.platform_client.get_next_job_run(self.validator_id)
         if not job_run:
             logger.info("No job runs available")
             return False

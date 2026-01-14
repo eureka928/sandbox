@@ -18,6 +18,7 @@
 # DEALINGS IN THE SOFTWARE.
 
 import time
+import sys
 import asyncio
 import numpy as np
 
@@ -102,9 +103,32 @@ class Validator(BaseValidatorNeuron):
         # TODO(developer): Rewrite this function based on your protocol definition.
         return await forward(self)
 
+    def check_for_thread_exception(self):
+        """
+        Check if the background thread has encountered an exception.
+        If so, log it, clean up resources, and exit the application.
+        """
+        if self.thread_exception is not None:
+            bt.logging.critical("Validator background thread died with exception:")
+            bt.logging.critical(self.thread_exception)
+
+            try:
+                if hasattr(self, "dendrite"):
+                    bt.logging.info("Closing dendrite session")
+                    self.dendrite.close_session()
+            except Exception as e:
+                bt.logging.error(f"Error closing dendrite session: {e}")
+
+            # Exit with error code so Docker will restart
+            bt.logging.critical("Exiting application due to validator thread failure")
+            sys.exit(1)
+
 
 # The main function parses the configuration and runs the validator.
 if __name__ == "__main__":
     with Validator() as validator:
         while True:
             time.sleep(5)
+
+            # Check if background thread has died with exception
+            validator.check_for_thread_exception()

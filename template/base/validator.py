@@ -24,9 +24,10 @@ import asyncio
 import argparse
 import threading
 import bittensor as bt
+import sys
+import traceback
 
 from typing import List, Union
-from traceback import print_exception
 
 from template.base.neuron import BaseNeuron
 from template.base.utils.weight_utils import (
@@ -83,6 +84,9 @@ class BaseValidatorNeuron(BaseNeuron):
         self.is_running: bool = False
         self.thread: Union[threading.Thread, None] = None
         self.lock = asyncio.Lock()
+
+        # Track exceptions from background thread
+        self.thread_exception: str | None = None
 
     def serve_axon(self):
         """Serve axon to enable external connections."""
@@ -165,13 +169,12 @@ class BaseValidatorNeuron(BaseNeuron):
                 bt.logging.success("Validator killed by keyboard interrupt.")
                 break
 
-            # In case of unforeseen errors, the validator will log the error and continue operations.
+            # In case of unforeseen errors, capture the exception and exit thread
             except Exception as err:
-                bt.logging.error(f"Error during validation: {str(err)}")
-                bt.logging.debug(
-                    str(print_exception(type(err), err, err.__traceback__))
-                )
-                continue
+                error_msg = f"Error during validation: {str(err)}\n{traceback.format_exc()}"
+                bt.logging.error(error_msg)
+                self.thread_exception = traceback.format_exc()
+                break  # Exit loop and let thread die
 
     def run_in_background_thread(self):
         """
@@ -201,7 +204,7 @@ class BaseValidatorNeuron(BaseNeuron):
         self.run_in_background_thread()
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, exc_type, exc_value, exc_tb):
         """
         Stops the validator's background operations upon exiting the context.
         This method facilitates the use of the validator in a 'with' statement.
@@ -211,8 +214,8 @@ class BaseValidatorNeuron(BaseNeuron):
                       None if the context was exited without an exception.
             exc_value: The instance of the exception that caused the context to be exited.
                        None if the context was exited without an exception.
-            traceback: A traceback object encoding the stack trace.
-                       None if the context was exited without an exception.
+            exc_tb: A traceback object encoding the stack trace.
+                    None if the context was exited without an exception.
         """
         if self.is_running:
             bt.logging.debug("Stopping validator in background thread.")

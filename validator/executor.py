@@ -125,7 +125,10 @@ class AgentExecutor:
         report_dict['started_at'] = self.started_at
         report_dict['completed_at'] = datetime.utcnow()
 
-        if isinstance(report_dict['report'], dict) and report_dict['report'].get("vulnerabilities") is not None:
+        if 'report' not in report_dict:
+            report_dict['status'] = 'timed_out'
+
+        elif isinstance(report_dict['report'], dict) and report_dict['report'].get("vulnerabilities") is not None:
             report_dict['status'] = 'success'
 
         else:

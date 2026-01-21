@@ -26,9 +26,8 @@ def call_chutes(
     request: InferenceRequest,
     job_id: str = "unknown",
     project_key: str = "unknown",
-    api_key: str = None
+    api_key: str = None,
 ) -> InferenceResponse:
-
     if not request.model:
         request.model = DEFAULT_MODEL
 
@@ -41,9 +40,7 @@ def call_chutes(
     payload_dict = request.model_dump()
     resp = None
 
-    payload_dict['response_format'] = {
-        'type': 'json_object'
-    }
+    payload_dict["response_format"] = {"type": "json_object"}
 
     for attempt in range(1, MAX_RETRIES + 1):
         try:

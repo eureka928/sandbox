@@ -29,13 +29,13 @@ def save_large_result_to_file(result, temp_dir):
     """Save large result to a temporary file and return the file path."""
     try:
         # Create a temporary file
-        fd, temp_file = tempfile.mkstemp(suffix='.json', dir=temp_dir)
+        fd, temp_file = tempfile.mkstemp(suffix=".json", dir=temp_dir)
         os.close(fd)
-        
+
         # Write result to file
-        with open(temp_file, 'w') as f:
+        with open(temp_file, "w") as f:
             json.dump(result, f, indent=2)
-        
+
         return temp_file
     except Exception as e:
         print(f"[FILE] Error saving result to file: {e}")
@@ -45,7 +45,7 @@ def save_large_result_to_file(result, temp_dir):
 def load_result_from_file(file_path):
     """Load result from a temporary file."""
     try:
-        with open(file_path, 'r') as f:
+        with open(file_path, "r") as f:
             return json.load(f)
     except Exception as e:
         print(f"[FILE] Error loading result from file: {e}")
@@ -59,7 +59,10 @@ def run_agent(agent_file, queue, temp_dir):
     resp = None
 
     try:
-        with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
+        with (
+            contextlib.redirect_stdout(stdout_capture),
+            contextlib.redirect_stderr(stderr_capture),
+        ):
             print("[AGENT] Loading agent module...")
             spec = importlib.util.spec_from_file_location("agent", agent_file)
             agent = importlib.util.module_from_spec(spec)
@@ -77,7 +80,10 @@ def run_agent(agent_file, queue, temp_dir):
                 resp = {"success": True, "report": result}
             except (pickle.PicklingError, AttributeError, TypeError) as e:
                 tb_str = traceback.format_exc()
-                resp = {"success": False, "error": f"Report serialization error: {e}: {tb_str}"}
+                resp = {
+                    "success": False,
+                    "error": f"Report serialization error: {e}: {tb_str}",
+                }
 
     except SystemExit as e:
         resp = {"success": False, "error": f"Exited with code {e.code}"}
@@ -89,21 +95,23 @@ def run_agent(agent_file, queue, temp_dir):
     # Capture stdout/stderr
     stdout_content = stdout_capture.getvalue()
     stderr_content = stderr_capture.getvalue()
-    
+
     if resp is None:
         resp = {"success": False, "error": "No response generated"}
 
-    resp.update({
-        "stdout": stdout_content,
-        "stderr": stderr_content,
-    })
-    
+    resp.update(
+        {
+            "stdout": stdout_content,
+            "stderr": stderr_content,
+        }
+    )
+
     print(f"[QUEUE] About to put result in queue: {resp.get('success', 'unknown')}")
-    
+
     # Check if result is too large for queue
     result_size = get_result_size(resp)
     print(f"[QUEUE] Result size: {result_size} bytes")
-    
+
     if result_size > MAX_QUEUE_SIZE:
         print(f"[QUEUE] Result too large ({result_size} bytes), saving to file")
         temp_file = save_large_result_to_file(resp, temp_dir)
@@ -128,7 +136,12 @@ def run_agent(agent_file, queue, temp_dir):
                     pass
         else:
             print("[QUEUE] Failed to save result to file")
-            error_resp = {"success": False, "error": "Failed to save large result to file", "stdout": stdout_content, "stderr": stderr_content}
+            error_resp = {
+                "success": False,
+                "error": "Failed to save large result to file",
+                "stdout": stdout_content,
+                "stderr": stderr_content,
+            }
             try:
                 queue.put(error_resp, timeout=QUEUE_TIMEOUT)
             except Exception as e:
@@ -141,13 +154,19 @@ def run_agent(agent_file, queue, temp_dir):
         except Exception as e:
             print(f"[QUEUE] ERROR putting result in queue: {e}")
             try:
-                error_resp = {"success": False, "error": f"Queue put failed: {e}", "stdout": stdout_content, "stderr": stderr_content}
+                error_resp = {
+                    "success": False,
+                    "error": f"Queue put failed: {e}",
+                    "stdout": stdout_content,
+                    "stderr": stderr_content,
+                }
                 queue.put(error_resp, timeout=QUEUE_TIMEOUT)
                 print("[QUEUE] Put error response in queue")
             except Exception as e2:
                 print(f"[QUEUE] CRITICAL: Could not put anything in queue: {e2}")
-    
+
     print("[AGENT] Process completed")
+
 
 def run_agent_direct(agent_file):
     """Run agent directly without multiprocessing for debugging."""
@@ -157,7 +176,10 @@ def run_agent_direct(agent_file):
     resp = None
 
     try:
-        with contextlib.redirect_stdout(stdout_capture), contextlib.redirect_stderr(stderr_capture):
+        with (
+            contextlib.redirect_stdout(stdout_capture),
+            contextlib.redirect_stderr(stderr_capture),
+        ):
             spec = importlib.util.spec_from_file_location("agent", agent_file)
             agent = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(agent)
@@ -173,7 +195,10 @@ def run_agent_direct(agent_file):
                 resp = {"success": True, "report": result}
             except (pickle.PicklingError, AttributeError, TypeError) as e:
                 tb_str = traceback.format_exc()
-                resp = {"success": False, "error": f"Report serialization error: {e}: {tb_str}"}
+                resp = {
+                    "success": False,
+                    "error": f"Report serialization error: {e}: {tb_str}",
+                }
 
     except SystemExit as e:
         resp = {"success": False, "error": f"Exited with code {e.code}"}
@@ -185,17 +210,20 @@ def run_agent_direct(agent_file):
     # Capture stdout/stderr
     stdout_content = stdout_capture.getvalue()
     stderr_content = stderr_capture.getvalue()
-    
+
     if resp is None:
         resp = {"success": False, "error": "No response generated"}
 
-    resp.update({
-        "stdout": stdout_content,
-        "stderr": stderr_content,
-    })
-    
+    resp.update(
+        {
+            "stdout": stdout_content,
+            "stderr": stderr_content,
+        }
+    )
+
     print(f"[DIRECT] Execution completed: {resp.get('success', 'unknown')}")
     return resp
+
 
 def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
     """Try direct execution first, fallback to multiprocessing."""
@@ -203,28 +231,28 @@ def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
         print("[TIMEOUT] FORCE_MULTIPROCESSING=true, skipping direct execution")
     else:
         print("[TIMEOUT] Attempting direct execution first...")
-        
+
         try:
             resp = run_agent_direct(agent_file)
             print(f"[TIMEOUT] Direct execution successful: {resp.get('success', 'unknown')}")
             return resp
         except Exception as e:
             print(f"[TIMEOUT] Direct execution failed: {e}, falling back to multiprocessing")
-    
+
     # Fallback to multiprocessing with file-based communication for large results
     print("[TIMEOUT] Using multiprocessing fallback...")
-    
+
     # Create temporary directory for large results
     temp_dir = tempfile.mkdtemp(prefix="agent_sandbox_")
     print(f"[TIMEOUT] Created temp directory: {temp_dir}")
-    
+
     try:
         queue = multiprocessing.Queue()
         process = multiprocessing.Process(target=run_agent, args=(agent_file, queue, temp_dir))
-        
+
         print(f"[TIMEOUT] Starting multiprocessing with {timeout_seconds}s timeout...")
         process.start()
-        
+
         print("[TIMEOUT] Waiting for process to complete...")
         process.join(timeout_seconds)
 
@@ -241,7 +269,7 @@ def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
             try:
                 resp = queue.get(timeout=QUEUE_TIMEOUT)
                 print(f"[QUEUE] Got result from queue: {resp.get('success', 'unknown')}")
-                
+
                 # Check if result is stored in a file
                 if resp.get("success") and "result_file" in resp:
                     result_file = resp["result_file"]
@@ -251,14 +279,17 @@ def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
                         resp = file_result
                         print("[FILE] Successfully loaded result from file")
                     else:
-                        resp = {"success": False, "error": "Failed to load result from file"}
-                    
+                        resp = {
+                            "success": False,
+                            "error": "Failed to load result from file",
+                        }
+
                     # Clean up temp file
                     try:
                         os.unlink(result_file)
                     except Exception:
                         pass
-                        
+
             except multiprocessing.queues.Empty:
                 print("[QUEUE] Queue is empty, no result returned")
                 resp = {
@@ -276,7 +307,7 @@ def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
         resp.setdefault("stderr", "")
 
         return resp
-        
+
     finally:
         # Clean up temporary directory
         try:

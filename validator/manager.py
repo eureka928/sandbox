@@ -13,19 +13,18 @@ from validator.executor import AgentExecutor
 
 logger = get_logger()
 
-PROXY_IMAGE_TAG = 'bitsec-proxy:latest'
+PROXY_IMAGE_TAG = "bitsec-proxy:latest"
 
 
 class SandboxManager:
     def __init__(self, is_local=False, wallet_name=None):
-
-        self.proxy_docker_dir = os.path.join(settings.validator_dir, 'proxy')
-        self.all_jobs_dir = os.path.join(os.getcwd(), 'jobs')
-        self.host_jobs_dir = os.path.join(settings.host_cwd, 'jobs')
+        self.proxy_docker_dir = os.path.join(settings.validator_dir, "proxy")
+        self.all_jobs_dir = os.path.join(os.getcwd(), "jobs")
+        self.host_jobs_dir = os.path.join(settings.host_cwd, "jobs")
         self.platform_client = PlatformClient(is_local=is_local, wallet_name=wallet_name)
         self.validator = self.platform_client.get_current_validator()
 
-        self.validator_id = self.validator['id']
+        self.validator_id = self.validator["id"]
 
         self.build_images()
         self.init_proxy()
@@ -113,20 +112,20 @@ class SandboxManager:
             agent_filepath = os.path.abspath(agent_filepath)
 
         else:
-            agent_filepath_rel = os.path.join(job_run_dir, 'agent.py')
+            agent_filepath_rel = os.path.join(job_run_dir, "agent.py")
             with open(agent_filepath_rel, "w", encoding="utf-8") as f:
-                f.write(agent['code'])
+                f.write(agent["code"])
 
             agent_filepath = os.path.join(
                 self.host_jobs_dir,
                 f"job_run_{job_run.id}",
-                'agent.py',
+                "agent.py",
             )
 
         loop = asyncio.get_running_loop()
         tasks = []
 
-        for project_key in agent['project_keys']:
+        for project_key in agent["project_keys"]:
             executor = AgentExecutor(
                 job_run,
                 agent_filepath,
@@ -142,7 +141,8 @@ class SandboxManager:
         # TODO: Check if finished successfully or part-fail
         self.platform_client.complete_job_run(job_run.id)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     LOCAL = settings.local
     logger.info(f"LOCAL: {LOCAL}")
     m = SandboxManager(is_local=LOCAL)

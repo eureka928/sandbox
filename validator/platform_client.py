@@ -22,9 +22,7 @@ from validator.models.platform import (
 
 
 class PlatformError(Exception):
-    def __init__(
-        self, message: str, status_code: int | None = None, details: Any | None = None
-    ):
+    def __init__(self, message: str, status_code: int | None = None, details: Any | None = None):
         super().__init__(message)
         self.status_code = status_code
         self.details = details
@@ -94,9 +92,7 @@ class APIPlatformClient:
         headers: dict[str, str] = {}
         if authenticate:
             if not self.hotkey:
-                raise ValueError(
-                    "Wallet name must be provided via argument or WALLET_NAME environment variable."
-                )
+                raise ValueError("Wallet name must be provided via argument or WALLET_NAME environment variable.")
 
             token = self._create_wallet_token(self.hotkey)
             headers["Authorization"] = f"Bearer {token}"
@@ -238,6 +234,10 @@ class MockPlatformClient:
                 "code4rena_superposition_2025_01",
                 "code4rena_loopfi_2025_02",
                 "code4rena_lambowin_2025_02",
+                # "code4rena_bakerfi-invitational_2025_02",
+                # "cantina_minimal-delegation_2025_04",
+                # "code4rena_kinetiq_2025_07",
+                # "cantina_smart-contract-audit-of-tn-contracts_2025_08",
             ]
         }
         return agent

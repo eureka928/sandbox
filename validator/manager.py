@@ -1,5 +1,5 @@
+import asyncio
 import os
-import time
 
 from python_on_whales import docker, Network
 from python_on_whales.exceptions import NoSuchNetwork
@@ -7,7 +7,7 @@ from python_on_whales.utils import run
 
 from config import settings
 from loggers.logger import get_logger
-from validator.platform_client import PlatformClient
+from validator.platform_client import PlatformClient, PlatformError
 from validator.executor import AgentExecutor
 
 
@@ -32,16 +32,16 @@ class SandboxManager:
 
         self.is_local = is_local
 
-    def run(self):
+    async def run(self):
         while True:
-            has_job = self.poll_job_run()
+            has_job = await self.poll_job_run()
             if not has_job:
-                time.sleep(60)
+                await asyncio.sleep(60)
 
             if self.is_local:
                 break
 
-    def poll_job_run(self):
+    async def poll_job_run(self):
         if not self.is_local:
             try:
                 self.platform_client.send_heartbeat()
@@ -56,13 +56,13 @@ class SandboxManager:
                 break
             except PlatformError as e:
                 logger.error(f"Error fetching job run: {e}")
-                time.sleep(delay)
+                await asyncio.sleep(1)
 
         if not job_run:
             logger.info("No job runs available")
             return False
 
-        self.process_job_run(job_run)
+        await self.process_job_run(job_run)
         return True
 
     def build_images(self):
@@ -97,7 +97,7 @@ class SandboxManager:
         )
         docker.network.connect(settings.proxy_network, settings.proxy_container)
 
-    def process_job_run(self, job_run):
+    async def process_job_run(self, job_run):
         logger.info(f"[J:{job_run.job_id}|JR:{job_run.id}] Processing job run")
 
         self.platform_client.start_job_run(job_run.id)
@@ -123,6 +123,9 @@ class SandboxManager:
                 'agent.py',
             )
 
+        loop = asyncio.get_running_loop()
+        tasks = []
+
         for project_key in agent['project_keys']:
             executor = AgentExecutor(
                 job_run,
@@ -131,7 +134,10 @@ class SandboxManager:
                 job_run_reports_dir,
                 platform_client=self.platform_client,
             )
-            executor.run()
+            task = loop.run_in_executor(None, executor.run)
+            tasks.append(task)
+
+        await asyncio.gather(*tasks)
 
         # TODO: Check if finished successfully or part-fail
         self.platform_client.complete_job_run(job_run.id)
@@ -140,4 +146,4 @@ if __name__ == '__main__':
     LOCAL = settings.local
     logger.info(f"LOCAL: {LOCAL}")
     m = SandboxManager(is_local=LOCAL)
-    m.run()
+    asyncio.run(m.run())

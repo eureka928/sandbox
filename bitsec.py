@@ -6,6 +6,7 @@ Bitsec CLI utility for miners and validators.
 Operations are signed with a Bittensor wallet hotkey.
 """
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -100,7 +101,7 @@ def miner_run_no_docker():
     """Run the agent execution and evaluation locally as a script"""
     os.environ["LOCAL"] = "true"
     manager = SandboxManager(is_local=True)
-    manager.run()
+    asyncio.run(manager.run())
 
 @miner_app.command("execute-agent")
 def miner_execute_agent():

@@ -12,7 +12,6 @@ from validator.platform_client import PlatformClient, PlatformError
 from validator.executor import AgentExecutor
 
 
-
 logger = get_logger()
 
 PROXY_IMAGE_TAG = "bitsec-proxy:latest"

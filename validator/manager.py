@@ -1,5 +1,6 @@
 import asyncio
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from python_on_whales import docker, Network
 from python_on_whales.exceptions import NoSuchNetwork
@@ -9,6 +10,7 @@ from config import settings
 from loggers.logger import get_logger
 from validator.platform_client import PlatformClient, PlatformError
 from validator.executor import AgentExecutor
+
 
 
 logger = get_logger()
@@ -23,6 +25,7 @@ class SandboxManager:
         self.host_jobs_dir = os.path.join(settings.host_cwd, "jobs")
         self.platform_client = PlatformClient(is_local=is_local, wallet_name=wallet_name)
         self.validator = self.platform_client.get_current_validator()
+        self.executor_pool = ThreadPoolExecutor(max_workers=12)
 
         self.validator_id = self.validator["id"]
 
@@ -133,7 +136,7 @@ class SandboxManager:
                 job_run_reports_dir,
                 platform_client=self.platform_client,
             )
-            task = loop.run_in_executor(None, executor.run)
+            task = loop.run_in_executor(self.executor_pool, executor.run)
             tasks.append(task)
 
         await asyncio.gather(*tasks)

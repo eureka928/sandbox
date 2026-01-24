@@ -11,16 +11,18 @@ app = FastAPI(title="Chutes Proxy")
 @app.get("/")
 async def root():
     """Root endpoint providing proxy information."""
-    return JSONResponse({
-        "service": "Chutes Proxy",
-        "description": "Inference proxy for LLM requests",
-        "endpoints": {
-            "POST /inference": "Submit inference requests",
-            "GET /docs": "Interactive API documentation",
-            "GET /openapi.json": "OpenAPI schema"
-        },
-        "status": "running"
-    })
+    return JSONResponse(
+        {
+            "service": "Chutes Proxy",
+            "description": "Inference proxy for LLM requests",
+            "endpoints": {
+                "POST /inference": "Submit inference requests",
+                "GET /docs": "Interactive API documentation",
+                "GET /openapi.json": "OpenAPI schema"
+            },
+            "status": "running"
+        }
+    )
 
 
 @app.post("/inference", response_model=InferenceResponse)

@@ -21,6 +21,8 @@ TIMEOUT = 300
 MAX_RETRIES = 5
 BACKOFF_FACTOR = 1.5
 
+# Global session for connection reuse (one per worker process)
+SESSION = requests.Session()
 
 def call_chutes(
     request: InferenceRequest,
@@ -36,7 +38,7 @@ def call_chutes(
     if not api_key:
         api_key = CHUTES_API_KEY
 
-    headers = {"Authorization": f"Bearer {CHUTES_API_KEY}"}
+    headers = {"Authorization": f"Bearer {api_key}"}
     payload_dict = request.model_dump()
     resp = None
 
@@ -45,7 +47,7 @@ def call_chutes(
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             logger.info(f"Sending request to Chutes. Attempt: {attempt}")
-            resp = requests.post(
+            resp = SESSION.post(
                 CHUTES_API_URL,
                 headers=headers,
                 json=payload_dict,

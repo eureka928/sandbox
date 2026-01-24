@@ -24,6 +24,9 @@ async def root():
         }
     )
 
+INFER_CONCURRENCY = 8  # per worker
+_sem = asyncio.Semaphore(INFER_CONCURRENCY)
+
 
 @app.post("/inference", response_model=InferenceResponse)
 async def inference(
@@ -32,7 +35,8 @@ async def inference(
     x_project_id: str = Header(default="unknown"),
 ):
     try:
-        # Run the blocking call_chutes function in a thread pool to allow parallel requests
-        return await asyncio.to_thread(call_chutes, request, x_job_id, x_project_id)
+        async with _sem:
+            # Run the blocking call_chutes function in a thread pool to allow parallel requests
+            return await asyncio.to_thread(call_chutes, request, x_job_id, x_project_id)
     except ChutesError as e:
         raise HTTPException(status_code=502, detail=str(e))

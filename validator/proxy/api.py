@@ -18,9 +18,9 @@ async def root():
             "endpoints": {
                 "POST /inference": "Submit inference requests",
                 "GET /docs": "Interactive API documentation",
-                "GET /openapi.json": "OpenAPI schema"
+                "GET /openapi.json": "OpenAPI schema",
             },
-            "status": "running"
+            "status": "running",
         }
     )
 

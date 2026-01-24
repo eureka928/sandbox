@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from models import InferenceRequest, InferenceResponse
@@ -31,6 +32,7 @@ async def inference(
     x_project_id: str = Header(default="unknown"),
 ):
     try:
-        return call_chutes(request, x_job_id, x_project_id)
+        # Run the blocking call_chutes function in a thread pool to allow parallel requests
+        return await asyncio.to_thread(call_chutes, request, x_job_id, x_project_id)
     except ChutesError as e:
         raise HTTPException(status_code=502, detail=str(e))

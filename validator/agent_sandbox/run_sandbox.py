@@ -8,9 +8,6 @@ import pickle
 import traceback
 import tempfile
 import shutil
-import sys
-from datetime import datetime
-import time
 
 TIMEOUT_SECONDS = 20 * 60
 AGENT_FILE = os.getenv("AGENT_FILE", "/app/agent.py")
@@ -256,97 +253,92 @@ def run_with_timeout(agent_file, timeout_seconds=TIMEOUT_SECONDS):
         print(f"[TIMEOUT] Starting multiprocessing with {timeout_seconds}s timeout...")
         process.start()
 
-        print("[TIMEOUT] Waiting for process to complete or result in queue...")
+        print("[TIMEOUT] Waiting for process to complete...")
+        process.join(timeout_seconds)
 
-        # We need to check the queue periodically while waiting for the process.
-        import time
-        start_time = time.time()
-        resp = None
-        check_interval = 1.0  # Check queue every second
-        max_wait_after_timeout = 60  # Wait up to 60s after timeout for result to appear in queue
-        
-        # Wait for process to finish or timeout, checking queue periodically
-        while True:
-            elapsed = time.time() - start_time
-            
-            # Log progress every 30 seconds
-            if int(elapsed) % 30 == 0 and elapsed > 0:
-                print(f"[TIMEOUT] Still waiting... Elapsed: {elapsed:.1f}s / {timeout_seconds}s")
-            # First, check if result is already in queue (non-blocking)
-            try:
-                resp = queue.get(timeout=0.1)  # Very short timeout for non-blocking check
-                print(f"[QUEUE] Got result from queue after {elapsed:.1f}s: {resp.get('success', 'unknown')}")
-                break  # Got result, exit loop
-            except multiprocessing.queues.Empty:
-                pass  # Queue empty, continue checking
-            
-            # Check if process finished
-            if not process.is_alive():
-                print(f"[TIMEOUT] Process exited after {elapsed:.1f}s, checking queue...")
-                # Process exited, try to get result from queue with longer timeout
-                try:
-                    resp = queue.get(timeout=10)  # Give it 10s to get result
-                    print(f"[QUEUE] Got result from queue after process exit: {resp.get('success', 'unknown')}")
-                    break
-                except multiprocessing.queues.Empty:
-                    print("[QUEUE] Process exited but queue is empty")
+        # FIX: Check queue FIRST before checking is_alive() to prevent false timeouts.
+        #
+        # Race condition explained:
+        # When process.join(timeout) returns, either the process finished OR the timeout
+        # elapsed - we don't know which. The old code checked is_alive() first, which
+        # could return True briefly even if the process just finished (during cleanup),
+        # causing false "Agent timeout" errors when the result was actually in the queue.
+        #
+        # The fix: Always try to get from queue first with a short timeout (1s).
+        # This handles the case where the result is mid-flush to the pipe when join()
+        # returns. Using get(timeout=1) instead of get_nowait() eliminates the race
+        # window where the result is being pickled/flushed but not yet available.
+        # The 1-second grace period is negligible compared to the 20-minute timeout.
+        #
+        # Only if the queue is empty after the grace period do we check is_alive()
+        # to determine if this is a real timeout or a process that crashed.
+        print("[QUEUE] Checking queue for result...")
+        try:
+            resp = queue.get(timeout=1)  # Short timeout to handle in-flight results
+            print(f"[QUEUE] Got result from queue: {resp.get('success', 'unknown')}")
+
+            # Check if result is stored in a file (for large results)
+            if resp.get("success") and "result_file" in resp:
+                result_file = resp["result_file"]
+                print(f"[FILE] Loading large result from file: {result_file}")
+                file_result = load_result_from_file(result_file)
+                if file_result:
+                    resp = file_result
+                    print("[FILE] Successfully loaded result from file")
+                else:
                     resp = {
                         "success": False,
-                        "error": "No result returned",
+                        "error": "Failed to load result from file",
                     }
-                    break
-            
-            # Check if we've exceeded the timeout
-            if elapsed >= timeout_seconds:
-                print(f"[TIMEOUT] Timeout reached ({elapsed:.1f}s >= {timeout_seconds}s), checking queue one more time...")
-                # Timeout reached, but check queue with longer timeout in case result is being put
+
+                # Clean up temp file
                 try:
-                    resp = queue.get(timeout=max_wait_after_timeout)
-                    print(f"[QUEUE] Got result from queue after timeout: {resp.get('success', 'unknown')}")
-                    break  # Got result despite timeout
-                except multiprocessing.queues.Empty:
-                    # Queue still empty after timeout, it's a real timeout
-                    print(f"[TIMEOUT] No result in queue after {elapsed + max_wait_after_timeout:.1f}s, terminating process...")
-                    if process.is_alive():
-                        process.terminate()
-                        process.join()
-                    resp = {
-                        "success": False,
-                        "error": "Agent timeout",
-                    }
-                    break
-            
-            # Sleep before next check
-            time.sleep(check_interval)
-        
-        # Process result if we got one from queue
-        if resp is not None and resp.get("success") and "result_file" in resp:
-            result_file = resp["result_file"]
-            print(f"[FILE] Loading large result from file: {result_file}")
-            file_result = load_result_from_file(result_file)
-            if file_result:
-                resp = file_result
-                print("[FILE] Successfully loaded result from file")
-            else:
+                    os.unlink(result_file)
+                except Exception:
+                    pass
+
+        except multiprocessing.queues.Empty:
+            # No result in queue - determine why
+            if process.is_alive():
+                # Process still running after timeout - this is a real timeout
+                print(f"[TIMEOUT] Process timed out after {timeout_seconds}s, terminating...")
+                process.terminate()
+                process.join(timeout=5)
+                # If terminate didn't work, force kill
+                if process.is_alive():
+                    print("[TIMEOUT] Process did not terminate, killing...")
+                    process.kill()
+                    process.join()
                 resp = {
                     "success": False,
-                    "error": "Failed to load result from file",
+                    "error": "Agent timeout",
                 }
-            
-            # Clean up temp file
-            try:
-                os.unlink(result_file)
-            except Exception:
-                pass
-        
-        # If we got a result but process is still alive, wait briefly for cleanup
-        if resp is not None and resp.get("success") and process.is_alive():
-            print("[TIMEOUT] Got result but process still alive, waiting briefly for cleanup...")
-            process.join(timeout=5)  # Give it 5 seconds for cleanup
+            else:
+                # Process exited but didn't put result in queue - likely crashed
+                print("[QUEUE] Process exited but queue is empty, no result returned")
+                resp = {
+                    "success": False,
+                    "error": "No result returned",
+                }
+        except (BrokenPipeError, EOFError) as e:
+            # Queue communication failed - process may have crashed
+            print(f"[QUEUE] Queue communication error: {e}")
             if process.is_alive():
-                print("[TIMEOUT] Process still alive after cleanup wait, terminating...")
                 process.terminate()
-                process.join()
+                process.join(timeout=5)
+                if process.is_alive():
+                    process.kill()
+                    process.join()
+            resp = {
+                "success": False,
+                "error": f"Queue communication error: {e}",
+            }
+        except Exception as e:
+            print(f"[QUEUE] Error getting from queue: {e}")
+            resp = {
+                "success": False,
+                "error": f"Queue get error: {e}",
+            }
 
         resp.setdefault("stdout", "")
         resp.setdefault("stderr", "")

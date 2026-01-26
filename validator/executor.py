@@ -243,7 +243,7 @@ class AgentExecutor:
             if not report_data.get("success", False):
                 error_msg = report_data.get("error", "Unknown error")
                 self.logger.error(f"Agent execution failed: {error_msg}")
-                self.logger.info("Evaluation complete | Result: FAIL | Detection: 0% | Found: 0 | Error: {error_msg}")
+                self.logger.info(f"Evaluation complete | Result: FAIL | Detection: 0% | Found: 0 | Error: {error_msg}")
                 return {
                     "status": Status.ERROR,
                     "error": error_msg,

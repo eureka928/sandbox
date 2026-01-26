@@ -5,6 +5,7 @@ import requests
 import sys
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -18,6 +19,8 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 from rich.panel import Panel
 
+
+MAX_WORKERS = 4
 
 console = Console()
 
@@ -237,6 +240,29 @@ class BaselineRunner:
             console.print(f"[red]Error analyzing {file_path.name}: {e}[/red]")
             return Vulnerabilities(vulnerabilities=[]), 0, 0
 
+    def process_file(self, file_path, source_dir):
+        relative_path = str(file_path.relative_to(source_dir))
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            if not content.strip():
+                return "skipped", None
+
+            vulnerabilities, input_tokens, output_tokens = self.analyze_file(
+                relative_path, content
+            )
+
+            return "ok", (
+                vulnerabilities.vulnerabilities,
+                input_tokens,
+                output_tokens,
+            )
+
+        except Exception as e:
+            return "error", (file_path.name, e)
+
     def analyze_project(
         self, 
         source_dir: Path,
@@ -310,35 +336,32 @@ class BaselineRunner:
         ) as progress:
             task = progress.add_task(f"Analyzing {len(files)} files...", total=len(files))
 
-            for file_path in files:
-                relative_path = str(file_path.relative_to(source_dir))
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                futures = {
+                    executor.submit(self.process_file, file_path, source_dir): file_path
+                    for file_path in files
+                }
 
-                progress.update(task, description=f"Analyzing {relative_path}...")
+                for future in as_completed(futures):
+                    result_type, result = future.result()
 
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
+                    if result_type == "ok":
+                        vulns, in_tok, out_tok = result
+                        all_vulnerabilities.extend(vulns)
+                        files_analyzed += 1
+                        total_input_tokens += in_tok
+                        total_output_tokens += out_tok
 
-                    if not content.strip():
+                    elif result_type == "skipped":
                         files_skipped += 1
-                        progress.advance(task)
-                        continue
 
-                    vulnerabilities, input_tokens, output_tokens = self.analyze_file(relative_path, content)
-                    all_vulnerabilities.extend(vulnerabilities.vulnerabilities)
-                    files_analyzed += 1
-                    total_input_tokens += input_tokens
-                    total_output_tokens += output_tokens
+                    elif result_type == "error":
+                        filename, err = result
+                        console.print(f"[red]Error processing {filename}: {err}[/red]")
+                        files_skipped += 1
 
-                except Exception as e:
-                    console.print(f"[red]Error processing {file_path.name}: {e}[/red]")
-                    files_skipped += 1
-                    # Continue to next file instead of aborting the whole run
                     progress.advance(task)
-                    continue
 
-                progress.advance(task)
-        
         # Deduplicate vulnerabilities
         unique_vulnerabilities = {
             v.id: v for v in all_vulnerabilities

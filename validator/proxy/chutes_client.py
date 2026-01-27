@@ -33,12 +33,15 @@ def call_chutes(
     if not request.model:
         request.model = DEFAULT_MODEL
 
-    logger.info(f"Request from [J:{job_id}|P:{project_key}]")
+    logger.info(f'Request from [J:{job_id}|P:{project_key}] | model="{request.model}"')
 
     if not api_key:
         api_key = CHUTES_API_KEY
 
-    headers = {"Authorization": f"Bearer {api_key}"}
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "X-Identifier": "Bitsec",
+    }
     payload_dict = request.model_dump()
     resp = None
 

@@ -234,10 +234,10 @@ class MockPlatformClient:
                 "code4rena_superposition_2025_01",
                 "code4rena_loopfi_2025_02",
                 "code4rena_lambowin_2025_02",
-                # "code4rena_bakerfi-invitational_2025_02",
-                # "cantina_minimal-delegation_2025_04",
-                # "code4rena_kinetiq_2025_07",
-                # "cantina_smart-contract-audit-of-tn-contracts_2025_08",
+                "code4rena_bakerfi-invitational_2025_02",
+                "cantina_minimal-delegation_2025_04",
+                "code4rena_kinetiq_2025_07",
+                "cantina_smart-contract-audit-of-tn-contracts_2025_08",
             ]
         }
         return agent

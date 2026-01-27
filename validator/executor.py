@@ -56,6 +56,20 @@ class AgentExecutor:
             self.logger.error(f"Exit code {e.return_code} while running {e.docker_command}")
             raise
 
+    def pull_latest_image(self, image_tag):
+        """
+        Pull the latest image.
+        """
+        try:
+            self.logger.info(f"Pulling latest image: {image_tag}")
+            docker.pull(image_tag)
+            self.logger.info(f"Image {image_tag} is up-to-date")
+        except DockerException as e:
+            self.logger.warning(
+                f"Failed to pull image {image_tag}: {e}. "
+                "Will attempt to use local image if available."
+            )
+
     def run(self):
         self.started_at = datetime.utcnow()
 
@@ -76,6 +90,9 @@ class AgentExecutor:
         self.remove_container(sandbox_container)
 
         project_image_tag = PROJECT_IMAGE_TAG_TMPL.format(project_key=self.project_key)
+
+        # pull the latest image
+        self.pull_latest_image(project_image_tag)
 
         self.logger.info("Starting container")
         container = docker.run(

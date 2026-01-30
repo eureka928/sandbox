@@ -176,4 +176,5 @@ agent_report.json
 .claude/
 thoughts/
 
-
+# store agent submissions for further evaluation
+tmp/

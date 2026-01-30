@@ -1,0 +1,10 @@
+# HardSteer Detect in Claude Code Opus 4.5
+
+this is an agent competition, the solutions are known by contestants ahead of time. i want agents that do well in finding exploits in the public dataset, and also generalize well across out of sample codebases.
+
+tmp/agent-{number}.py this is a submission into the contest
+validator/curated-high.json this is the known solution list
+
+is there strong evidence this submission is hardcoded, using hard steering, or a legitimate entry?
+
+phase 2. gather the evidence and give me a confidence percentage 0% (valid entry) to 100% (very obviously hardcoded or hard steering)

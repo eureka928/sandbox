@@ -42,5 +42,104 @@
     "commit": "214849c3517eb26b31fe194bceae65cb0f52d2c0",
     "timeout": null,
     "project_key": "code4rena_secondswap_2025_02"
+  },
+  {
+    "platform": "code4rena",
+    "repo_url": "https://github.com/code-423n4/2024-12-bakerfi",
+    "num_files": null,
+    "slug": "bakerfi-invitational_2025_02",
+    "id": 5,
+    "name": "BakerFi Invitational",
+    "commit": "main",
+    "timeout": null,
+    "project_key": "code4rena_bakerfi-invitational_2025_02"
+  },
+  {
+    "platform": "code4rena",
+    "repo_url": "https://github.com/code-423n4/2025-04-kinetiq",
+    "num_files": null,
+    "slug": "kinetiq_2025_07",
+    "id": 6,
+    "name": "Kinetiq",
+    "commit": "main",
+    "timeout": null,
+    "project_key": "code4rena_kinetiq_2025_07"
+  },
+  {
+    "platform": "code4rena",
+    "repo_url": "https://github.com/code-423n4/2025-10-covenant",
+    "num_files": null,
+    "slug": "covenant_2025_10",
+    "id": 7,
+    "name": "Covenant",
+    "commit": "main",
+    "timeout": null,
+    "project_key": "code4rena_covenant_2025_10"
+  },
+  {
+    "platform": "code4rena",
+    "repo_url": "https://github.com/code-423n4/2025-11-sequence",
+    "num_files": null,
+    "slug": "sequence_2025_11",
+    "id": 8,
+    "name": "Sequence",
+    "commit": "main",
+    "timeout": null,
+    "project_key": "code4rena_sequence_2025_11"
+  },
+  {
+    "platform": "code4rena",
+    "repo_url": "https://github.com/code-423n4/2025-10-hybra-finance",
+    "num_files": null,
+    "slug": "hybra-finance_2025_10",
+    "id": 9,
+    "name": "Hybra Finance",
+    "commit": "main",
+    "timeout": null,
+    "project_key": "code4rena_hybra-finance_2025_10"
+  },
+  {
+    "platform": "code4rena",
+    "repo_url": "https://github.com/code-423n4/2025-12-panoptic",
+    "num_files": null,
+    "slug": "panoptic_2025_12",
+    "id": 10,
+    "name": "Panoptic",
+    "commit": "main",
+    "timeout": null,
+    "project_key": "code4rena_panoptic_2025_12"
+  },
+  {
+    "platform": "code4rena",
+    "repo_url": "https://github.com/code-423n4/2025-11-sukukfi",
+    "num_files": null,
+    "slug": "sukukfi_2025_11",
+    "id": 11,
+    "name": "SukukFi",
+    "commit": "main",
+    "timeout": null,
+    "project_key": "code4rena_sukukfi_2025_11"
+  },
+  {
+    "platform": "code4rena",
+    "repo_url": "https://github.com/code-423n4/2025-11-ekubo",
+    "num_files": null,
+    "slug": "ekubo_2025_11",
+    "id": 12,
+    "name": "Ekubo",
+    "commit": "main",
+    "timeout": null,
+    "project_key": "code4rena_ekubo_2025_11"
+  },
+  {
+    "platform": "code4rena",
+    "repo_url": "https://github.com/code-423n4/2025-11-brix-money",
+    "num_files": null,
+    "slug": "brix-money_2025_11",
+    "id": 13,
+    "name": "Brix Money",
+    "commit": "main",
+    "timeout": null,
+    "project_key": "code4rena_brix-money_2025_11"
   }
 ]

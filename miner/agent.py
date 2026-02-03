@@ -95,6 +95,7 @@ class BaselineRunner:
         payload = {
             "model": self.config["model"],
             "messages": messages,
+            "temperature": 0,
         }
 
         headers = {
@@ -262,6 +263,26 @@ class BaselineRunner:
             - Ownership renouncement or immutability patterns
             - Issues requiring admin/owner compromise as precondition
             - Error message inconsistencies
+            - Generic MEV/front-running/sandwich on functions that do NOT
+              interact with AMMs, DEXes, or price oracles
+            - Slippage concerns where minOut/minAmount is a caller-controlled
+              parameter — the function provides the option, it is the
+              caller's responsibility to set a safe value
+            - Claims that code contradicts comments or NatSpec — comments
+              can be outdated; audit the CODE, not the comments
+            - Claims a boolean condition is inverted without a concrete
+              trace proving the correct behavior
+            - Memory vs storage confusion — only report if you can show
+              concrete state corruption
+            - "Uninitialized mapping/storage" claims — Solidity
+              zero-initializes all storage by default
+            - Front-running initialize()/init() of clone/proxy contracts
+              deployed via factories (factory calls init atomically)
+            - Cooldown mechanisms, time delays, conversion rate functions,
+              or emergency governance functions as vulnerabilities — these
+              are intentional protocol design patterns
+            - "Unchecked return value" for internal calls or SafeERC20
+              patterns in Solidity >=0.8
 
             {format_instructions}
 
@@ -374,7 +395,315 @@ class BaselineRunner:
         if any(re.search(p, combined) for p in miner_patterns):
             return True
 
+        # Generic slippage/MEV on non-AMM code
+        slippage_noise = [
+            r"(mev|sandwich|front.?run).*(slippage|min.?out)",
+            r"slippage.*(not\s+set|set\s+to\s+0|zero)",
+            r"no\s+(slippage|minimum\s+output)\s+protection",
+        ]
+        amm_keywords = (
+            r"(uniswap|sushiswap|curve|balancer|amm|dex" r"|swap.?router)"
+        )
+        if any(re.search(p, combined) for p in slippage_noise):
+            if not re.search(amm_keywords, combined):
+                return True
+
+        # Comment-vs-code mismatch
+        comment_patterns = [
+            r"(comment|natspec|documentation)\s+"
+            r"(say|state|indicate)s?"
+            r".{0,60}(but|however|incorrect)",
+            r"(contradicts?|inconsistent\s+with)\s+(the\s+)?"
+            r"(comment|natspec|documentation)",
+        ]
+        if any(re.search(p, combined) for p in comment_patterns):
+            return True
+
+        # Uninitialized storage/mapping
+        uninit_patterns = [
+            r"uninitialized\s+(mapping|storage|state|variable)",
+            r"default\s+value.*mapping.*exploit",
+        ]
+        if any(re.search(p, combined) for p in uninit_patterns):
+            return True
+
+        # Front-running initialize on proxy/clone
+        frontrun_init_patterns = [
+            r"front.?run.*(initializ|init\s*\()",
+            r"anyone\s+can\s+call\s+(initializ|init\b)",
+        ]
+        if any(re.search(p, combined) for p in frontrun_init_patterns):
+            return True
+
         return False
+
+    def consensus_filter(
+        self,
+        runs: list[list[Vulnerability]],
+        min_appearances: int = 2,
+    ) -> list[Vulnerability]:
+        """Keep only findings that appear in >= min_appearances runs.
+
+        Matches by (file, vulnerability_type) key. When matched,
+        keeps the highest-confidence version.
+        """
+        from collections import defaultdict
+
+        # Count appearances and track best version per key
+        appearances = defaultdict(int)
+        best_by_key = {}
+
+        for run in runs:
+            # Deduplicate within a single run first
+            seen_in_run = set()
+            for v in run:
+                key = (v.file, v.vulnerability_type)
+                if key in seen_in_run:
+                    continue
+                seen_in_run.add(key)
+                appearances[key] += 1
+
+                if key not in best_by_key or (
+                    v.confidence > best_by_key[key].confidence
+                ):
+                    best_by_key[key] = v
+
+        # Keep findings appearing in enough runs
+        consensus = []
+        for key, count in appearances.items():
+            if count >= min_appearances:
+                consensus.append(best_by_key[key])
+
+        total = sum(len(r) for r in runs)
+        filtered = total - len(consensus)
+        if filtered > 0:
+            console.print(
+                f"[dim]  → Consensus filter: {len(consensus)} "
+                f"findings confirmed across {len(runs)} runs "
+                f"({filtered} not confirmed)[/dim]"
+            )
+
+        return consensus
+
+    def rerank_findings(
+        self,
+        vulnerabilities: list[Vulnerability],
+        files_content: dict[str, str],
+    ) -> tuple[list[Vulnerability], int, int]:
+        """Re-rank findings by sending them back to the LLM
+        with source code for verification.
+
+        Groups findings by file and verifies each group.
+
+        Returns:
+            Tuple of (verified_vulnerabilities, input_tokens,
+            output_tokens)
+        """
+        from collections import defaultdict
+
+        if not vulnerabilities:
+            return [], 0, 0
+
+        console.print("\n[bold cyan]Re-ranking verification pass[/bold cyan]")
+        console.print(
+            f"[dim]  → Verifying {len(vulnerabilities)} "
+            f"findings against source code[/dim]"
+        )
+
+        # Group findings by file
+        by_file = defaultdict(list)
+        for v in vulnerabilities:
+            by_file[v.file].append(v)
+
+        verified = []
+        total_in = 0
+        total_out = 0
+
+        for file_path, file_vulns in by_file.items():
+            source_code = files_content.get(file_path, "")
+            if not source_code:
+                # No source available, keep findings (fail-safe)
+                verified.extend(file_vulns)
+                continue
+
+            batch_verified, in_tok, out_tok = self._rerank_batch(
+                file_vulns, file_path, source_code
+            )
+            verified.extend(batch_verified)
+            total_in += in_tok
+            total_out += out_tok
+
+        rejected = len(vulnerabilities) - len(verified)
+        if rejected > 0:
+            console.print(
+                f"[dim]  → Re-ranking rejected {rejected} "
+                f"findings, kept {len(verified)}[/dim]"
+            )
+        else:
+            console.print(
+                f"[dim]  → Re-ranking kept all "
+                f"{len(verified)} findings[/dim]"
+            )
+
+        return verified, total_in, total_out
+
+    def _rerank_batch(
+        self,
+        vulnerabilities: list[Vulnerability],
+        file_path: str,
+        source_code: str,
+    ) -> tuple[list[Vulnerability], int, int]:
+        """Verify a batch of findings for one file against its
+        source code.
+
+        Returns:
+            Tuple of (verified_vulnerabilities, input_tokens,
+            output_tokens)
+        """
+        # Build findings summary for the prompt
+        findings_text = ""
+        for i, v in enumerate(vulnerabilities):
+            findings_text += (
+                f"\n### Finding {i + 1}\n"
+                f"- **ID**: {v.id}\n"
+                f"- **Title**: {v.title}\n"
+                f"- **Type**: {v.vulnerability_type}\n"
+                f"- **Severity**: {v.severity.value}\n"
+                f"- **Confidence**: {v.confidence}\n"
+                f"- **Location**: {v.location}\n"
+                f"- **Description**: {v.description}\n"
+            )
+
+        system_prompt = dedent("""
+            You are an adversarial smart contract security
+            reviewer. Your job is to REJECT false positives.
+            Default to REJECT — only KEEP a finding if you can
+            confirm a concrete, exploitable vulnerability.
+
+            ## AUTOMATIC REJECT — discard immediately if:
+            1. The described code pattern does NOT exist in
+               the source file
+            2. The function has access control modifiers
+               (onlyOwner, onlyAdmin, creditManagerOnly,
+               onlyRole, auth, etc.) and the finding claims
+               "anyone can call" or "missing access control"
+            3. The finding mentions missing slippage /
+               price-manipulation protection but no swap,
+               AMM, or price oracle interaction exists in
+               the code
+            4. The finding claims reentrancy risk but the
+               code uses ReentrancyGuard, nonReentrant, or
+               follows checks-effects-interactions (state
+               updated before external call)
+            5. The finding targets an abstract contract,
+               interface, or function with no implementation
+               body
+            6. The finding is about admin/owner trust
+               assumptions (e.g., "owner could rug") —
+               these are design choices, not vulnerabilities
+            7. The description uses vague language like
+               "could potentially", "might allow", or
+               "may lead to" WITHOUT a concrete exploit
+               sequence
+            8. The described function or contract name does
+               not appear in the source code
+            9. The vulnerability is in dead code or
+               unreachable paths
+            10. The finding claims slippage/MEV risk but the
+                function does not perform a swap, liquidity
+                operation, or interact with a price-dependent
+                external protocol
+            11. The finding cites a comment, NatSpec, or
+                documentation mismatch as evidence the code
+                is wrong — only code behavior matters
+            12. The finding claims a boolean/comparison is
+                inverted but does not trace the correct
+                expected behavior
+            13. The finding claims "uninitialized" storage or
+                mapping — Solidity zero-initializes all storage
+            14. The finding flags a cooldown, time delay, or
+                emergency governance function as a vulnerability
+            15. The finding claims a function can be front-run
+                but it is called atomically by a factory or
+                within a batch transaction
+
+            ## KEEP ONLY IF all of these are true:
+            1. You can quote the specific vulnerable line(s)
+               from the source code
+            2. There is a concrete, step-by-step exploit path
+               (not hypothetical)
+            3. No existing guard, modifier, or check prevents
+               the exploit
+            4. The exploit path is unambiguous with no
+               assumptions about external state, caller
+               behavior, or admin compromise
+
+            ## OUTPUT FORMAT
+            Output valid JSON with this structure:
+            {
+              "verified": [
+                {
+                  "id": "<finding ID>",
+                  "keep": true/false,
+                  "reason": "<brief reason>",
+                  "vulnerable_lines": "<quoted line(s) or null>"
+                }
+              ]
+            }
+
+            IMPORTANT: Output ONLY valid JSON. Include ALL
+            finding IDs. When in doubt, REJECT.
+        """)
+
+        user_prompt = dedent(f"""
+            Verify these findings against the source code.
+
+            ## Source Code ({file_path})
+            ```
+            {source_code}
+            ```
+
+            ## Findings to Verify
+            {findings_text}
+
+            For each finding, check if the described
+            vulnerability actually exists in the code above.
+        """)
+
+        try:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+
+            response = self.inference(messages=messages)
+            response_content = response["content"].strip()
+            result = self.clean_json_response(response_content)
+
+            input_tokens = response.get("input_tokens", 0)
+            output_tokens = response.get("output_tokens", 0)
+
+            # Build lookup of kept IDs
+            kept_ids = set()
+            for item in result.get("verified", []):
+                if item.get("keep", False):
+                    kept_ids.add(item.get("id", ""))
+                else:
+                    console.print(
+                        f"[dim]  → Rejected: {item.get('id')} "
+                        f"- {item.get('reason', 'no reason')}"
+                        f"[/dim]"
+                    )
+
+            verified = [v for v in vulnerabilities if v.id in kept_ids]
+            return verified, input_tokens, output_tokens
+
+        except Exception as e:
+            console.print(
+                f"[red]Error in re-ranking for {file_path}: " f"{e}[/red]"
+            )
+            # Fail-safe: keep all findings on error
+            return vulnerabilities, 0, 0
 
     def deduplicate_by_type(
         self, vulnerabilities: list[Vulnerability]
@@ -419,7 +748,7 @@ class BaselineRunner:
         self, vulnerabilities: Vulnerabilities, file_path: str
     ) -> Vulnerabilities:
         """Post-process vulnerabilities: filter by confidence and standardize locations."""
-        confidence_threshold = 0.80
+        confidence_threshold = 0.83
         filtered = []
         filtered_count = 0
         noise_count = 0
@@ -453,6 +782,10 @@ class BaselineRunner:
                 r"\bin theory\b",
                 r"\bif .{0,30} is compromised\b",
                 r"\bassuming .{0,30} (fails|is malicious)\b",
+                r"\bcould be manipulated\b",
+                r"\bin certain (conditions|scenarios|cases)\b",
+                r"\bunder (certain|specific) " r"(conditions|circumstances)\b",
+                r"\bif .{0,30} sets? .{0,20} to zero\b",
             ]
             desc_lower = v.description.lower()
             vague_hits = sum(
@@ -611,6 +944,19 @@ class BaselineRunner:
             If a bug affects multiple functions, report it ONCE at the root cause location.
             Report at most 3-4 findings per file. Only report findings you are highly confident about.
 
+            ## BEFORE REPORTING, VERIFY EACH FINDING
+            For every potential finding, ask yourself:
+            1. Did I trace the FULL execution path, including modifiers
+               and callers, not just one function in isolation?
+            2. Is the "vulnerable" parameter actually controlled by an
+               attacker, or only by the caller/admin?
+            3. Does a modifier, require(), or earlier check already
+               prevent the attack I am describing?
+            4. Am I flagging a DESIGN CHOICE (cooldown, conversion
+               rate, emergency function) as a bug?
+            5. Am I trusting a CODE COMMENT over the actual code?
+            If ANY answer disqualifies the finding, do NOT report it.
+
             ## DO NOT REPORT (these are NOT vulnerabilities)
             - Gas optimizations (unless causes actual DoS)
             - Code style or naming issues
@@ -629,6 +975,26 @@ class BaselineRunner:
             - Issues requiring admin/owner compromise as a precondition
             - Issues requiring miner/validator collusion or block manipulation
             - Uninitialized state that is set during initialize() or constructor
+            - Generic MEV/front-running/sandwich on functions that do NOT
+              interact with AMMs, DEXes, or price oracles
+            - Slippage concerns where minOut/minAmount is a caller-controlled
+              parameter — the function provides the option, it is the
+              caller's responsibility to set a safe value
+            - Claims that code contradicts comments or NatSpec — comments
+              can be outdated; audit the CODE, not the comments
+            - Claims a boolean condition is inverted without a concrete
+              trace proving the correct behavior
+            - Memory vs storage confusion — only report if you can show
+              concrete state corruption
+            - "Uninitialized mapping/storage" claims — Solidity
+              zero-initializes all storage by default
+            - Front-running initialize()/init() of clone/proxy contracts
+              deployed via factories (factory calls init atomically)
+            - Cooldown mechanisms, time delays, conversion rate functions,
+              or emergency governance functions as vulnerabilities — these
+              are intentional protocol design patterns
+            - "Unchecked return value" for internal calls or SafeERC20
+              patterns in Solidity >=0.8
 
             {format_instructions}
 
@@ -691,6 +1057,7 @@ class BaselineRunner:
 
     def process_file(self, file_path, source_dir):
         relative_path = str(file_path.relative_to(source_dir))
+        num_runs = 2
 
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -699,14 +1066,30 @@ class BaselineRunner:
             if not content.strip():
                 return "skipped", None
 
-            vulnerabilities, input_tokens, output_tokens = self.analyze_file(
-                relative_path, content
-            )
+            runs = []
+            total_input_tokens = 0
+            total_output_tokens = 0
+
+            for run_idx in range(num_runs):
+                if run_idx > 0:
+                    console.print(
+                        f"[dim]  → Run {run_idx + 1}/{num_runs} "
+                        f"for {relative_path}[/dim]"
+                    )
+                vulns, in_tok, out_tok = self.analyze_file(
+                    relative_path, content
+                )
+                runs.append(vulns.vulnerabilities)
+                total_input_tokens += in_tok
+                total_output_tokens += out_tok
+
+            # Apply consensus filter across runs
+            confirmed = self.consensus_filter(runs, min_appearances=2)
 
             return "ok", (
-                vulnerabilities.vulnerabilities,
-                input_tokens,
-                output_tokens,
+                confirmed,
+                total_input_tokens,
+                total_output_tokens,
             )
 
         except Exception as e:
@@ -905,6 +1288,13 @@ class BaselineRunner:
         unique_vulnerabilities = {v.id: v for v in all_vulnerabilities}
         vulns = list(unique_vulnerabilities.values())
         vulns = self.deduplicate_by_type(vulns)
+
+        # Pass 3: Re-ranking verification
+        vulns, rerank_in, rerank_out = self.rerank_findings(
+            vulns, files_content
+        )
+        total_input_tokens += rerank_in
+        total_output_tokens += rerank_out
 
         result = AnalysisResult(
             project=project_name,

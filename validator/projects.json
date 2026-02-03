@@ -54,5 +54,131 @@
         "tarball_url": "https://github.com/code-423n4/2024-12-secondswap/archive/214849c3517eb26b31fe194bceae65cb0f52d2c0.tar.gz"
       }
     ]
+  },
+  {
+    "project_id": "code4rena_bakerfi-invitational_2025_02",
+    "name": "BakerFi Invitational",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "BakerFi_main",
+        "repo_url": "https://github.com/code-423n4/2024-12-bakerfi",
+        "commit": "main",
+        "tree_url": "https://github.com/code-423n4/2024-12-bakerfi/tree/main",
+        "tarball_url": "https://github.com/code-423n4/2024-12-bakerfi/archive/main.tar.gz"
+      }
+    ]
+  },
+  {
+    "project_id": "code4rena_kinetiq_2025_07",
+    "name": "Kinetiq",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "Kinetiq_main",
+        "repo_url": "https://github.com/code-423n4/2025-04-kinetiq",
+        "commit": "main",
+        "tree_url": "https://github.com/code-423n4/2025-04-kinetiq/tree/main",
+        "tarball_url": "https://github.com/code-423n4/2025-04-kinetiq/archive/main.tar.gz"
+      }
+    ]
+  },
+  {
+    "project_id": "code4rena_covenant_2025_10",
+    "name": "Covenant",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "Covenant_main",
+        "repo_url": "https://github.com/code-423n4/2025-10-covenant",
+        "commit": "main",
+        "tree_url": "https://github.com/code-423n4/2025-10-covenant/tree/main",
+        "tarball_url": "https://github.com/code-423n4/2025-10-covenant/archive/main.tar.gz"
+      }
+    ]
+  },
+  {
+    "project_id": "code4rena_sequence_2025_11",
+    "name": "Sequence",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "Sequence_main",
+        "repo_url": "https://github.com/code-423n4/2025-11-sequence",
+        "commit": "main",
+        "tree_url": "https://github.com/code-423n4/2025-11-sequence/tree/main",
+        "tarball_url": "https://github.com/code-423n4/2025-11-sequence/archive/main.tar.gz"
+      }
+    ]
+  },
+  {
+    "project_id": "code4rena_hybra-finance_2025_10",
+    "name": "Hybra Finance",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "HybraFinance_main",
+        "repo_url": "https://github.com/code-423n4/2025-10-hybra-finance",
+        "commit": "main",
+        "tree_url": "https://github.com/code-423n4/2025-10-hybra-finance/tree/main",
+        "tarball_url": "https://github.com/code-423n4/2025-10-hybra-finance/archive/main.tar.gz"
+      }
+    ]
+  },
+  {
+    "project_id": "code4rena_panoptic_2025_12",
+    "name": "Panoptic",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "Panoptic_main",
+        "repo_url": "https://github.com/code-423n4/2025-12-panoptic",
+        "commit": "main",
+        "tree_url": "https://github.com/code-423n4/2025-12-panoptic/tree/main",
+        "tarball_url": "https://github.com/code-423n4/2025-12-panoptic/archive/main.tar.gz"
+      }
+    ]
+  },
+  {
+    "project_id": "code4rena_sukukfi_2025_11",
+    "name": "SukukFi",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "SukukFi_main",
+        "repo_url": "https://github.com/code-423n4/2025-11-sukukfi",
+        "commit": "main",
+        "tree_url": "https://github.com/code-423n4/2025-11-sukukfi/tree/main",
+        "tarball_url": "https://github.com/code-423n4/2025-11-sukukfi/archive/main.tar.gz"
+      }
+    ]
+  },
+  {
+    "project_id": "code4rena_ekubo_2025_11",
+    "name": "Ekubo",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "Ekubo_main",
+        "repo_url": "https://github.com/code-423n4/2025-11-ekubo",
+        "commit": "main",
+        "tree_url": "https://github.com/code-423n4/2025-11-ekubo/tree/main",
+        "tarball_url": "https://github.com/code-423n4/2025-11-ekubo/archive/main.tar.gz"
+      }
+    ]
+  },
+  {
+    "project_id": "code4rena_brix-money_2025_11",
+    "name": "Brix Money",
+    "platform": "code4rena",
+    "codebases": [
+      {
+        "codebase_id": "BrixMoney_main",
+        "repo_url": "https://github.com/code-423n4/2025-11-brix-money",
+        "commit": "main",
+        "tree_url": "https://github.com/code-423n4/2025-11-brix-money/tree/main",
+        "tarball_url": "https://github.com/code-423n4/2025-11-brix-money/archive/main.tar.gz"
+      }
+    ]
   }
 ]

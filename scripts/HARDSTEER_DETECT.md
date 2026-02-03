@@ -1,5 +1,9 @@
 # HardSteer Detect in Claude Code Opus 4.5
 
+validator/curated-high.json is the full known solution list. reduce curated-high.json to only include the projects that are in the codebases list for the eval set.
+
+## Prompt
+
 this is an agent competition, the solutions are known by contestants ahead of time. i want agents that do well in finding exploits in the public dataset, and also generalize well across out of sample codebases.
 
 tmp/agent-{number}.py this is a submission into the contest

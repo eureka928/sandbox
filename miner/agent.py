@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import requests
 import sys
 import time
@@ -148,6 +149,74 @@ class BaselineRunner:
 
         return resp_json
 
+    def post_process_vulnerabilities(
+        self, vulnerabilities: Vulnerabilities, file_path: str
+    ) -> Vulnerabilities:
+        """Post-process vulnerabilities: filter by confidence and standardize locations."""
+        confidence_threshold = 0.75
+        filtered = []
+        filtered_count = 0
+
+        for v in vulnerabilities.vulnerabilities:
+            calibrated_confidence = v.confidence
+
+            # Boost confidence for well-formed Contract.function locations
+            location_parts = v.location.replace(":", ".").split(".")
+            if len(location_parts) >= 2:
+                # Check if first part looks like a contract name (capitalized)
+                if location_parts[0] and location_parts[0][0].isupper():
+                    calibrated_confidence = min(1.0, calibrated_confidence + 0.05)
+
+            # Reduce confidence for vague language (word boundaries to avoid "payment")
+            vague_patterns = [
+                r"\bmight\b", r"\bpossibly\b", r"\bcould potentially\b",
+                r"\bmay be\b", r"\bmay cause\b", r"\bmay lead\b"
+            ]
+            desc_lower = v.description.lower()
+            if any(re.search(p, desc_lower) for p in vague_patterns):
+                calibrated_confidence = max(0.0, calibrated_confidence - 0.1)
+
+            v.confidence = round(calibrated_confidence, 2)
+
+            # Filter by confidence threshold
+            if v.confidence < confidence_threshold:
+                filtered_count += 1
+                continue
+
+            # Normalize location format
+            v.location = self._normalize_location(v.location, file_path)
+
+            # Ensure file field is set
+            if not v.file:
+                v.file = file_path
+
+            filtered.append(v)
+
+        if filtered_count > 0:
+            console.print(
+                f"[dim]  → Filtered {filtered_count} low-confidence findings[/dim]"
+            )
+
+        return Vulnerabilities(vulnerabilities=filtered)
+
+    def _normalize_location(self, location: str, file_path: str) -> str:
+        """Normalize location to file_path:Contract.function format."""
+        location = location.strip()
+
+        # Already has file path
+        if file_path in location:
+            return location
+
+        # Has some file reference with colon
+        if ":" in location and "/" in location.split(":")[0]:
+            return location
+
+        # Just Contract.function - prepend file path
+        if ":" not in location:
+            return f"{file_path}:{location}"
+
+        return location
+
     def analyze_file(self, relative_path: str, content: str) -> tuple[Vulnerabilities, int, int]:
         """Analyze a single file for security vulnerabilities.
         
@@ -162,53 +231,66 @@ class BaselineRunner:
         format_instructions = parser.get_format_instructions()
 
         system_prompt = dedent(f"""
-            You are a security auditor analyzing smart contract code for vulnerabilities.
+            You are an expert smart contract security auditor. Find ALL exploitable vulnerabilities.
 
-            Analyze the provided code file and identify security vulnerabilities. For each vulnerability found, provide:
+            ## DESCRIPTION REQUIREMENTS (CRITICAL FOR MATCHING)
+            Each finding description MUST include these elements for proper detection:
+            1. **Filename**: Include the .sol filename (e.g., "In Vault.sol, the...")
+            2. **Function call pattern**: Reference functions as `functionName(` (e.g., "the withdraw() function")
+            3. **Core mechanism**: The specific flaw (e.g., "state updated after external call")
+            4. **Impact**: Concrete consequence (e.g., "allows attacker to drain all funds")
 
-            1. A clear title describing the issue
-            2. A detailed description including:
-               - What the vulnerability is
-               - Where it occurs (function name, line references)
-               - Why it's a security issue
-               - Potential impact
-            3. The vulnerability type (e.g., reentrancy, access control, integer overflow, etc.)
-            4. Severity level (critical, high, medium, low)
-            5. Confidence level (0.0 to 1.0)
+            ## LOCATION FORMAT
+            Use: `ContractName.functionName` (e.g., `Vault.withdraw`)
 
-            Focus on REAL security issues that could lead to:
-            - Loss of funds
-            - Unauthorized access
-            - Denial of service
-            - Data corruption
-            - Privilege escalation
-            - Protocol manipulation
+            ## VULNERABILITY TYPES (use exact names)
+            reentrancy, access-control, integer-overflow, flash-loan-attack,
+            front-running, denial-of-service, logic-error, oracle-manipulation,
+            precision-loss, unchecked-external-call, storage-collision
 
-            DO NOT report:
-            - Code quality issues without security impact
-            - Gas optimization suggestions unless they prevent DoS
-            - Style or naming convention issues
-            - Missing comments or documentation
-            - Theoretical issues without practical exploit paths
+            ## SEVERITY
+            - critical: Direct fund loss, no preconditions
+            - high: Fund loss with conditions, protocol disruption
+            - medium: Limited loss, multiple steps required
+            - low: Minor issues, theoretical only
 
-            IMPORTANT: Your response must be ONLY the raw valid JSON object, without any markdown formatting, comments, or other text.
+            ## CONFIDENCE (0.0-1.0)
+            - 0.9+: Definite vulnerability with clear exploit
+            - 0.8-0.9: High confidence, minor uncertainty
+            - 0.75-0.8: Confident but needs specific conditions
+            - Only report if confidence >= 0.75
 
-            Do not add any explanations or markdown formatting (e.g., ```json) to the output.
+            ## EXAMPLE GOOD DESCRIPTION
+            "In Vault.sol, the withdraw() function updates the user balance after calling
+            an external contract via transfer(). An attacker can deploy a malicious contract
+            that re-enters withdraw() before the balance update, draining all ETH from the vault."
+
+            ## DO NOT REPORT
+            - Gas optimizations (unless DoS)
+            - Code style issues
+            - Theoretical issues without exploit path
 
             {format_instructions}
 
-            IMPORTANT: Begin your response with `{{"vulnerabilities":`
+            IMPORTANT: Output ONLY valid JSON. Begin with `{{"vulnerabilities":`
         """)
 
-        user_prompt = dedent(f"""
-            Analyze this {file_path.suffix} file for security vulnerabilities:
+        # Extract just the filename for clearer reference
+        filename = file_path.name
 
-            File: {relative_path}
+        user_prompt = dedent(f"""
+            Analyze {filename} for security vulnerabilities.
+
+            File path: {relative_path}
             ```{file_path.suffix[1:] if file_path.suffix else 'txt'}
             {content}
             ```
 
-            Identify and report security vulnerabilities found.
+            For each vulnerability found:
+            - Reference the file as "{filename}" in descriptions
+            - Use function() notation when mentioning functions
+            - Set location to ContractName.functionName format
+            - Set file field to "{relative_path}"
         """)
 
         try:
@@ -226,7 +308,12 @@ class BaselineRunner:
             for v in vulnerabilities.vulnerabilities:
                 v.reported_by_model = self.config['model']
 
-            if vulnerabilities:
+            # Post-process vulnerabilities
+            vulnerabilities = self.post_process_vulnerabilities(
+                vulnerabilities, relative_path
+            )
+
+            if vulnerabilities.vulnerabilities:
                 console.print(f"[green]  → Found {len(vulnerabilities.vulnerabilities)} vulnerabilities[/green]")
             else:
                 console.print("[yellow]  → No vulnerabilities found[/yellow]")
@@ -426,7 +513,7 @@ class BaselineRunner:
 
 def agent_main(project_dir: str = None, inference_api: str = None):
     config = {
-        'model': "deepseek-ai/DeepSeek-V3.1-Terminus"
+        'model': "deepseek-ai/DeepSeek-V3-0324"
     }
 
     if not project_dir:

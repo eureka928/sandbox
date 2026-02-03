@@ -8,6 +8,7 @@ then optionally scores findings against the ScaBench benchmark.
 import json
 import os
 import sys
+import traceback
 from dataclasses import asdict
 from pathlib import Path
 
@@ -15,7 +16,6 @@ from rich.console import Console
 from rich.table import Table
 from rich import box
 
-from miner.agent import agent_main
 from scripts.projects import init_project, PROJECTS_DIR, PROJECTS_FILE
 from loggers.logger import get_logger
 
@@ -38,7 +38,7 @@ def _load_benchmark():
     """Load benchmark data and return a dict keyed by project_id."""
     if not os.path.exists(BENCHMARK_FILE):
         console.print(
-            f"[yellow]Benchmark file not found: {BENCHMARK_FILE}[/yellow]"
+            f"[yellow]Benchmark file not found: " f"{BENCHMARK_FILE}[/yellow]"
         )
         return {}
     with open(BENCHMARK_FILE, "r", encoding="utf-8") as f:
@@ -57,9 +57,30 @@ def _ensure_project(project):
     project_dir = os.path.join(PROJECTS_DIR, project["project_key"])
     if not os.path.isdir(project_dir):
         raise FileNotFoundError(
-            f"Project directory not found after fetch: {project_dir}"
+            f"Project directory not found after fetch: " f"{project_dir}"
         )
     return project_dir
+
+
+def _run_agent(project_dir, inference_api):
+    """Run agent_main safely, catching sys.exit calls.
+
+    Returns the report dict on success, or None on failure.
+    """
+    from miner.agent import agent_main
+
+    try:
+        return agent_main(
+            project_dir=project_dir,
+            inference_api=inference_api,
+        )
+    except SystemExit as e:
+        console.print(f"[red]Agent exited with code {e.code}[/red]")
+        return None
+    except Exception as e:
+        console.print(f"[red]Agent error: {e}[/red]")
+        traceback.print_exc()
+        return None
 
 
 def run_local_test(
@@ -68,7 +89,8 @@ def run_local_test(
     skip_scoring=False,
 ):
     """
-    Run the miner agent locally on projects and optionally score results.
+    Run the miner agent locally on projects and optionally score
+    results.
 
     Args:
         project_keys: List of project keys to test, or None for all.
@@ -84,7 +106,7 @@ def run_local_test(
         missing = set(project_keys) - {p["project_key"] for p in projects}
         if missing:
             console.print(
-                f"[red]Unknown project keys: {', '.join(missing)}[/red]"
+                f"[red]Unknown project keys: " f"{', '.join(missing)}[/red]"
             )
             console.print(
                 "Available: "
@@ -95,6 +117,37 @@ def run_local_test(
         projects = all_projects
 
     benchmark_map = {} if skip_scoring else _load_benchmark()
+
+    # Initialize scorer once up-front when scoring is enabled
+    scorer = None
+    if not skip_scoring:
+        from validator.scorer import ScaBenchScorerV2
+        from config import settings
+
+        if not settings.chutes_api_key:
+            console.print(
+                "[red]CHUTES_API_KEY not set in .env — "
+                "required for scoring[/red]"
+            )
+            console.print(
+                "[yellow]Use --skip-scoring to run without "
+                "the scorer[/yellow]"
+            )
+            sys.exit(1)
+
+        scorer_config = {
+            "api_key": settings.chutes_api_key,
+            "api_url": inference_api,
+            "debug": True,
+            "verbose": True,
+            "confidence_threshold": 0.75,
+            "strict_matching": False,
+        }
+        try:
+            scorer = ScaBenchScorerV2(scorer_config)
+        except Exception as e:
+            console.print(f"[red]Failed to initialize scorer: {e}[/red]")
+            sys.exit(1)
 
     results_summary = []
 
@@ -116,14 +169,15 @@ def run_local_test(
 
         # Run the miner agent
         console.print(f"\n[bold]Running agent on {project_dir}[/bold]")
-        try:
-            report = agent_main(
-                project_dir=project_dir, inference_api=inference_api
-            )
-        except SystemExit:
+        report = _run_agent(project_dir, inference_api)
+
+        if report is None:
             console.print(f"[red]Agent failed for {project_key}[/red]")
             results_summary.append(
-                {"project": project_key, "error": "agent_main exited"}
+                {
+                    "project": project_key,
+                    "error": "agent_main failed",
+                }
             )
             continue
 
@@ -138,12 +192,15 @@ def run_local_test(
             json.dump(report_data, f, indent=2)
         console.print(f"[green]Report saved to {report_path}[/green]")
 
+        agent_findings = report.get("vulnerabilities", [])
+        num_findings = len(agent_findings)
+
         # Score if benchmark data exists and scoring not skipped
-        if skip_scoring:
+        if skip_scoring or scorer is None:
             results_summary.append(
                 {
                     "project": project_key,
-                    "findings": report.get("total_vulnerabilities", 0),
+                    "findings": num_findings,
                     "scored": False,
                 }
             )
@@ -152,54 +209,23 @@ def run_local_test(
         expected_findings = benchmark_map.get(project_key)
         if not expected_findings:
             console.print(
-                f"[yellow]No benchmark data for {project_key}, "
-                f"skipping scoring[/yellow]"
+                f"[yellow]No benchmark data for "
+                f"{project_key}, skipping scoring[/yellow]"
             )
             results_summary.append(
                 {
                     "project": project_key,
-                    "findings": report.get("total_vulnerabilities", 0),
+                    "findings": num_findings,
                     "scored": False,
                     "reason": "no benchmark data",
                 }
             )
             continue
 
-        # Import scorer here to avoid import errors when not scoring
-        from validator.scorer import ScaBenchScorerV2
-        from config import settings
-
-        scorer_config = {
-            "api_key": settings.chutes_api_key,
-            "api_url": inference_api,
-            "debug": True,
-            "verbose": True,
-            "confidence_threshold": 0.75,
-            "strict_matching": False,
-        }
-
-        try:
-            scorer = ScaBenchScorerV2(scorer_config)
-        except Exception as e:
-            console.print(f"[red]Failed to initialize scorer: {e}[/red]")
-            console.print(
-                "[yellow]Ensure CHUTES_API_KEY is set in .env[/yellow]"
-            )
-            results_summary.append(
-                {
-                    "project": project_key,
-                    "findings": report.get("total_vulnerabilities", 0),
-                    "scored": False,
-                    "reason": f"scorer init failed: {e}",
-                }
-            )
-            continue
-
-        agent_findings = report.get("vulnerabilities", [])
         console.print(
             f"\n[bold]Scoring {project_key}: "
             f"{len(expected_findings)} expected vs "
-            f"{len(agent_findings)} found[/bold]"
+            f"{num_findings} found[/bold]"
         )
 
         scoring_result = scorer.score_project(
@@ -217,7 +243,7 @@ def run_local_test(
         results_summary.append(
             {
                 "project": project_key,
-                "findings": len(agent_findings),
+                "findings": num_findings,
                 "scored": True,
                 "detection_rate": scoring_result.detection_rate,
                 "precision": scoring_result.precision,
@@ -253,7 +279,14 @@ def _print_summary(results):
 
     for r in results:
         if "error" in r:
-            table.add_row(r["project"], "[red]ERROR[/red]", "-", "-", "-", "-")
+            table.add_row(
+                r["project"],
+                "[red]ERROR[/red]",
+                "-",
+                "-",
+                "-",
+                "-",
+            )
             continue
 
         findings = str(r.get("findings", 0))

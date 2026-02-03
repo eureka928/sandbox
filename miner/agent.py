@@ -170,6 +170,251 @@ class BaselineRunner:
 
         return resp_json
 
+    def analyze_cross_contract(
+        self, files_content: dict[str, str]
+    ) -> tuple[Vulnerabilities, int, int]:
+        """Analyze all project files together for cross-contract vulnerabilities.
+
+        Returns:
+            Tuple of (vulnerabilities, input_tokens, output_tokens)
+        """
+        console.print("\n[bold cyan]Cross-contract analysis pass[/bold cyan]")
+        console.print(
+            f"[dim]  → Analyzing {len(files_content)} files " f"together[/dim]"
+        )
+
+        # Build concatenated source
+        combined_source = ""
+        for path, content in sorted(files_content.items()):
+            combined_source += f"// ===== FILE: {path} =====\n{content}\n\n"
+
+        parser = PydanticOutputParser(pydantic_object=Vulnerabilities)
+        format_instructions = parser.get_format_instructions()
+
+        system_prompt = dedent(f"""
+            You are an expert smart contract security auditor performing a whole-project review.
+
+            You are given ALL source files of a project concatenated together. Analyze them as a complete system. Look for vulnerabilities that require understanding how multiple components interact, as well as subtle bugs that benefit from full-project context.
+
+            ## WHAT TO LOOK FOR
+
+            ### Cross-Contract State Flows
+            1. **Incorrect state propagation**: When Contract A sets state that Contract B reads, verify correctness. Example: vesting contract tracks `stepsClaimed` and `amountClaimed`, but transfer function recalculates `releaseRate` using original `totalAmount / numOfSteps` instead of `(totalAmount - amountClaimed) / (numOfSteps - stepsClaimed)`, letting sellers unlock more tokens than locked.
+            2. **Accounting errors across boundaries**: Trace profit/loss, fee, or balance calculations that span contracts. Check that credits and debits sum correctly. Example: liquidation function in CDPVault.sol incorrectly handles profit vs loss accounting when calling pool functions.
+            3. **Ordering dependencies**: Operations whose outcome depends on ordering of prior operations. Example: listing order in a marketplace affecting array indices, causing state corruption.
+
+            ### External Protocol Dependencies
+            4. **Front-runnable deterministic deployments**: Factory contracts using CREATE2 or Clones.clone() produce predictable addresses. If subsequent calls (e.g., `uniswapFactory.createPair()`) depend on that address, an attacker can predict the address and call the external protocol first, permanently DoS-ing the factory.
+            5. **Wrong token ordering assumptions**: DEX interactions that assume a token is always token0 or token1 instead of querying `pool.token0()`. Uniswap sorts tokens lexicographically; hardcoded assumptions produce wrong swap directions.
+
+            ### Reward & Distribution Systems
+            6. **Rounding-induced reward loss**: When distributing rewards, if `deltaIndex = accrued.divDown(totalShares)` rounds to zero but `lastBalance` is still advanced, those rewards are permanently lost. Index and balance must advance together or not at all.
+
+            ### Missing Safety Mechanisms
+            7. **Missing slippage protection**: Any function that removes liquidity, withdraws from pools, burns positions, or calls `update_position()` with negative delta MUST have minimum output amount parameters. Without them, MEV sandwich attacks extract value. Flag if slippage params are absent.
+            8. **Unvalidated critical parameters**: Functions performing swaps, rebalances, or liquidations with user-supplied parameters (direction masks, amounts, etc.) that have a specific valid range but no validation. Anyone can call with arbitrary values to disrupt the protocol.
+
+            ### Fund Flow Errors
+            9. **Inconsistent refund logic**: In swap functions, trace: amount taken from user -> amount actually swapped -> refund. If the taken amount already equals the swap amount (adjusted for liquidity), an additional refund is double-counting and drains the protocol.
+
+            ## DESCRIPTION REQUIREMENTS
+            Each finding MUST include:
+            1. **All files/contracts involved** (e.g., "In StepVesting.sol and VestingManager.sol...")
+            2. **The specific functions** using `functionName()` notation
+            3. **Step-by-step exploit scenario** with concrete attacker actions
+            4. **Concrete impact** (fund loss, permanent DoS, state corruption)
+
+            ## SEVERITY
+            - critical: Direct fund loss, no preconditions
+            - high: Fund loss with conditions, protocol disruption, permanent DoS
+            - medium: Limited loss, multiple steps required
+            - low: Minor issues, theoretical only
+
+            ## CONFIDENCE (0.0-1.0)
+            - 0.9+: Definite vulnerability with clear exploit
+            - 0.8-0.9: High confidence, minor uncertainty
+            - 0.75-0.8: Confident but needs specific conditions
+            - Report if confidence >= 0.75
+
+            ## LOCATION FORMAT
+            Use: `ContractName.functionName` for the primary location.
+            Set `file` to the file where the root cause is.
+
+            ## VULNERABILITY TYPES (use exact names)
+            reentrancy, access-control, integer-overflow, flash-loan-attack,
+            front-running, denial-of-service, logic-error, oracle-manipulation,
+            precision-loss, unchecked-external-call, storage-collision
+
+            ## CRITICAL: QUALITY CONTROLS
+            - Report at most 5-6 findings total. Only the highest-impact, highest-confidence issues.
+            - Do NOT repeat issues already obvious from single-file analysis (missing zero checks, basic reentrancy, admin access control).
+            - Do NOT report multiple variations of the same bug. One finding per root cause.
+            - Each finding MUST have a concrete, self-contained exploit path. No "if admin is compromised" or "if oracle is manipulated" assumptions.
+
+            ## DO NOT REPORT
+            - Missing zero-address checks on constructor/initializer/admin parameters
+            - Centralization risks or admin trust assumptions
+            - Gas optimizations without actual DoS impact
+            - Events not being emitted
+            - Speculative overflow/underflow in Solidity >=0.8.0
+            - Known OpenZeppelin patterns
+            - Code style or naming issues
+            - Ownership renouncement or immutability patterns
+            - Issues requiring admin/owner compromise as precondition
+            - Error message inconsistencies
+
+            {format_instructions}
+
+            IMPORTANT: Output ONLY valid JSON. Begin with `{{"vulnerabilities":`
+        """)
+
+        user_prompt = dedent(f"""
+            Analyze this complete project for security vulnerabilities. You have all source files below.
+
+            Focus on:
+            - Bugs requiring understanding of how multiple contracts interact
+            - State propagation errors between contracts
+            - Missing safety mechanisms (slippage, parameter validation)
+            - Incorrect assumptions about external protocols (DEX token ordering, deterministic addresses)
+            - Reward distribution rounding errors that lose funds
+            - Inconsistent fund flows (double refunds, wrong accounting)
+
+            {combined_source}
+
+            Report all high-impact vulnerabilities you find. Include the specific files and functions involved.
+        """)
+
+        try:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+
+            response = self.inference(messages=messages)
+            response_content = response["content"].strip()
+
+            msg_json = self.clean_json_response(response_content)
+
+            vulnerabilities = Vulnerabilities(**msg_json)
+            for v in vulnerabilities.vulnerabilities:
+                v.reported_by_model = self.config["model"]
+
+            # Post-process each vulnerability
+            processed = []
+            for v in vulnerabilities.vulnerabilities:
+                single = Vulnerabilities(vulnerabilities=[v])
+                single = self.post_process_vulnerabilities(single, v.file)
+                processed.extend(single.vulnerabilities)
+
+            vulnerabilities = Vulnerabilities(vulnerabilities=processed)
+
+            if vulnerabilities.vulnerabilities:
+                console.print(
+                    f"[green]  → Cross-contract pass found "
+                    f"{len(vulnerabilities.vulnerabilities)} "
+                    f"vulnerabilities[/green]"
+                )
+            else:
+                console.print(
+                    "[yellow]  → No cross-contract vulnerabilities "
+                    "found[/yellow]"
+                )
+
+            input_tokens = response.get("input_tokens", 0)
+            output_tokens = response.get("output_tokens", 0)
+
+            return vulnerabilities, input_tokens, output_tokens
+
+        except Exception as e:
+            console.print(f"[red]Error in cross-contract analysis: {e}[/red]")
+            return Vulnerabilities(vulnerabilities=[]), 0, 0
+
+    def _is_noise_finding(self, v: Vulnerability) -> bool:
+        """Check if a finding matches known false-positive patterns."""
+        title_lower = v.title.lower()
+        desc_lower = v.description.lower()
+        combined = f"{title_lower} {desc_lower}"
+
+        # Missing zero-address / input validation noise
+        zero_check_patterns = [
+            r"missing zero[- ]address",
+            r"missing address validation",
+            r"no zero[- ]address check",
+            r"missing input validation.*(constructor|initializ)",
+        ]
+        if any(re.search(p, combined) for p in zero_check_patterns):
+            return True
+
+        # Admin/owner compromise assumptions
+        admin_patterns = [
+            r"(compromised|malicious)\s+(admin|owner|deployer)",
+            r"if\s+(the\s+)?(admin|owner)\s+(is|were|becomes)",
+            r"admin\s+can\s+(set|change|update).*malicious",
+            r"requires?\s+(admin|owner)\s+compromise",
+        ]
+        if any(re.search(p, combined) for p in admin_patterns):
+            return True
+
+        # Design choices reported as vulnerabilities
+        design_patterns = [
+            r"ownership\s+renounce",
+            r"permanent(ly)?\s+immutable",
+            r"(constructor|deployer)\s+sets.*zero",
+            r"error\s+message\s+inconsisten",
+            r"inconsistent\s+(error|revert)\s+message",
+        ]
+        if any(re.search(p, combined) for p in design_patterns):
+            return True
+
+        # Block manipulation / miner collusion
+        miner_patterns = [
+            r"(miner|validator|block\s+producer)\s+(control|manipulat)",
+            r"block\s+(timestamp|number)\s+manipulat",
+        ]
+        if any(re.search(p, combined) for p in miner_patterns):
+            return True
+
+        return False
+
+    def deduplicate_by_type(
+        self, vulnerabilities: list[Vulnerability]
+    ) -> list[Vulnerability]:
+        """Deduplicate findings: keep top finding per (file, vulnerability_type) group."""
+        from collections import defaultdict
+
+        groups = defaultdict(list)
+        for v in vulnerabilities:
+            key = (v.file, v.vulnerability_type)
+            groups[key].append(v)
+
+        deduped = []
+        dedup_count = 0
+        for key, group in groups.items():
+            # Sort by severity priority then confidence
+            severity_order = {
+                "critical": 0,
+                "high": 1,
+                "medium": 2,
+                "low": 3,
+            }
+            group.sort(
+                key=lambda x: (
+                    severity_order.get(x.severity.value, 4),
+                    -x.confidence,
+                )
+            )
+            # Keep top 1 per group to minimize false positives
+            deduped.append(group[0])
+            dedup_count += len(group) - 1
+
+        if dedup_count > 0:
+            console.print(
+                f"[dim]  → Deduplicated {dedup_count} "
+                f"redundant findings[/dim]"
+            )
+
+        return deduped
+
     def post_process_vulnerabilities(
         self, vulnerabilities: Vulnerabilities, file_path: str
     ) -> Vulnerabilities:
@@ -177,8 +422,14 @@ class BaselineRunner:
         confidence_threshold = 0.80
         filtered = []
         filtered_count = 0
+        noise_count = 0
 
         for v in vulnerabilities.vulnerabilities:
+            # Filter known noise patterns first
+            if self._is_noise_finding(v):
+                noise_count += 1
+                continue
+
             calibrated_confidence = v.confidence
 
             # Boost confidence for well-formed Contract.function locations
@@ -190,7 +441,7 @@ class BaselineRunner:
                         1.0, calibrated_confidence + 0.05
                     )
 
-            # Reduce confidence for vague language (word boundaries to avoid "payment")
+            # Reduce confidence for vague/speculative language
             vague_patterns = [
                 r"\bmight\b",
                 r"\bpossibly\b",
@@ -198,10 +449,18 @@ class BaselineRunner:
                 r"\bmay be\b",
                 r"\bmay cause\b",
                 r"\bmay lead\b",
+                r"\btheoretically\b",
+                r"\bin theory\b",
+                r"\bif .{0,30} is compromised\b",
+                r"\bassuming .{0,30} (fails|is malicious)\b",
             ]
             desc_lower = v.description.lower()
-            if any(re.search(p, desc_lower) for p in vague_patterns):
-                calibrated_confidence = max(0.0, calibrated_confidence - 0.1)
+            vague_hits = sum(
+                1 for p in vague_patterns if re.search(p, desc_lower)
+            )
+            calibrated_confidence = max(
+                0.0, calibrated_confidence - (0.1 * vague_hits)
+            )
 
             v.confidence = round(calibrated_confidence, 2)
 
@@ -219,6 +478,10 @@ class BaselineRunner:
 
             filtered.append(v)
 
+        if noise_count > 0:
+            console.print(
+                f"[dim]  → Filtered {noise_count} noise findings[/dim]"
+            )
         if filtered_count > 0:
             console.print(
                 f"[dim]  → Filtered {filtered_count} low-confidence findings[/dim]"
@@ -295,18 +558,64 @@ class BaselineRunner:
             - 0.9+: Definite vulnerability with clear exploit
             - 0.8-0.9: High confidence, minor uncertainty
             - 0.75-0.8: Confident but needs specific conditions
-            - Only report if confidence >= 0.8
+            - Only report if confidence >= 0.75
+
+            ## HIGH-VALUE VULNERABILITY PATTERNS TO CHECK
+            Look carefully for these specific patterns:
+
+            1. **Reward/fee distribution rounding**: When dividing accumulated rewards by total shares,
+               check if rounding to zero causes permanent loss. If `deltaIndex = accrued / totalShares`
+               rounds to zero but `lastBalance` still advances, rewards are silently lost.
+               State variables (index and balance) must advance in lockstep or not at all.
+
+            2. **Missing slippage protection**: For any function that withdraws liquidity, burns
+               positions, or removes funds from pools, verify slippage parameters (min output amounts)
+               exist. Without them, MEV sandwich attacks can steal value. This applies to
+               `decreaseLiquidity`, `removeLiquidity`, `withdraw`, `update_position` with negative
+               deltas, etc.
+
+            3. **Incorrect formula after partial state changes**: When transferring, splitting, or
+               migrating positions (vesting, staking, etc.), check if recalculations use the
+               ORIGINAL totals instead of REMAINING amounts. E.g., `releaseRate = totalAmount / steps`
+               is wrong if some amount was already claimed; it should be
+               `(totalAmount - amountClaimed) / (steps - stepsClaimed)`.
+
+            4. **Unvalidated parameters for state-changing functions**: If a function performs
+               critical operations (swaps, rebalances, liquidations) with user-supplied parameters
+               that should come from a preview/calculation function, check if those parameters
+               are validated. Anyone calling with arbitrary values can disrupt protocol state.
+
+            5. **Incorrect swap direction / token ordering assumptions**: When interacting with
+               DEX pools (Uniswap V2/V3, etc.), verify the code queries actual token ordering
+               via `token0()`/`token1()` rather than assuming a fixed position based on identity.
+               Tokens are sorted lexicographically; hardcoded assumptions break when addresses
+               don't match expected ordering.
+
+            6. **Front-runnable deterministic deployments**: When using CREATE2, Clones.clone(),
+               or other deterministic deployment, check if subsequent operations (e.g., creating
+               a DEX pair) can be front-run by an attacker who predicts the address and performs
+               the operation first, causing a permanent DoS.
+
+            7. **Inconsistent refund logic**: In multi-step swap/transfer flows, trace the full
+               fund path: amount taken from user -> amount used -> refund. If the amount taken
+               already accounts for partial fills, an additional refund creates double-counting
+               and protocol loss.
 
             ## EXAMPLE GOOD DESCRIPTION
             "In Vault.sol, the withdraw() function updates the user balance after calling
             an external contract via transfer(). An attacker can deploy a malicious contract
             that re-enters withdraw() before the balance update, draining all ETH from the vault."
 
+            ## CRITICAL: AVOID DUPLICATES
+            Do NOT report multiple variations of the same underlying issue.
+            If a bug affects multiple functions, report it ONCE at the root cause location.
+            Report at most 3-4 findings per file. Only report findings you are highly confident about.
+
             ## DO NOT REPORT (these are NOT vulnerabilities)
             - Gas optimizations (unless causes actual DoS)
             - Code style or naming issues
             - Theoretical issues without a concrete exploit path
-            - Missing zero-address checks on constructor/initializer parameters
+            - Missing zero-address checks on constructor/initializer/admin parameters
             - Missing input validation that has no security impact
             - Centralization risks or admin trust assumptions (admin privileges are by design)
             - Events not being emitted
@@ -314,6 +623,12 @@ class BaselineRunner:
             - Issues in interface definitions (interfaces have no implementation)
             - Known patterns from OpenZeppelin or other audited libraries
             - Speculative overflow/underflow in Solidity >=0.8.0 (has built-in overflow checks)
+            - "Missing access control" on functions protected by modifiers (onlyOwner, onlyAdmin)
+            - Ownership renouncement or immutability patterns (these are intentional design choices)
+            - Error message text inconsistencies
+            - Issues requiring admin/owner compromise as a precondition
+            - Issues requiring miner/validator collusion or block manipulation
+            - Uninitialized state that is set during initialize() or constructor
 
             {format_instructions}
 
@@ -552,16 +867,51 @@ class BaselineRunner:
 
                     progress.advance(task)
 
-        # Deduplicate vulnerabilities
+        # Pass 2: Cross-contract analysis
+        MAX_CROSS_CONTRACT_TOKENS = 100_000
+        files_content = {}
+        for file_path in files:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if content.strip():
+                    relative_path = str(file_path.relative_to(source_dir))
+                    files_content[relative_path] = content
+            except Exception:
+                pass
+
+        total_chars = sum(len(c) for c in files_content.values())
+        estimated_tokens = total_chars // 4
+
+        if estimated_tokens > MAX_CROSS_CONTRACT_TOKENS:
+            console.print(
+                f"[yellow]Skipping cross-contract pass: "
+                f"~{estimated_tokens:,} tokens exceeds "
+                f"{MAX_CROSS_CONTRACT_TOKENS:,} limit[/yellow]"
+            )
+        elif files_content:
+            console.print(
+                f"[dim]Cross-contract pass: ~{estimated_tokens:,} "
+                f"tokens across {len(files_content)} files[/dim]"
+            )
+            cc_vulns, cc_in, cc_out = self.analyze_cross_contract(
+                files_content
+            )
+            all_vulnerabilities.extend(cc_vulns.vulnerabilities)
+            total_input_tokens += cc_in
+            total_output_tokens += cc_out
+
+        # Deduplicate vulnerabilities by ID, then by (file, type)
         unique_vulnerabilities = {v.id: v for v in all_vulnerabilities}
         vulns = list(unique_vulnerabilities.values())
+        vulns = self.deduplicate_by_type(vulns)
 
         result = AnalysisResult(
             project=project_name,
             timestamp=datetime.now().isoformat(),
             files_analyzed=files_analyzed,
             files_skipped=files_skipped,
-            total_vulnerabilities=len(unique_vulnerabilities),
+            total_vulnerabilities=len(vulns),
             vulnerabilities=vulns,
             token_usage={
                 "input_tokens": total_input_tokens,
@@ -628,7 +978,7 @@ class BaselineRunner:
 
 
 def agent_main(project_dir: str = None, inference_api: str = None):
-    config = {"model": "deepseek-ai/DeepSeek-V3-0324"}
+    config = {"model": "deepseek-ai/DeepSeek-V3.2"}
 
     if not project_dir:
         project_dir = "/app/project_code"

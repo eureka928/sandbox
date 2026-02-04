@@ -33,10 +33,11 @@ class APIPlatformClient:
         base_url: str | None = None,
         timeout: int = 10,
         wallet_name: str | None = None,
+        hotkey_name: str | None = None,
     ):
         self.base_url = (base_url or settings.platform_url).rstrip("/")
         self.timeout = timeout
-        self.set_wallet(wallet_name)
+        self.set_wallet(wallet_name, hotkey_name)
 
         self.session = self.init_session()
 
@@ -55,9 +56,16 @@ class APIPlatformClient:
 
         return session
 
-    def set_wallet(self, wallet_name: str | None = None):
+    def set_wallet(
+        self,
+        wallet_name: str | None = None,
+        hotkey_name: str | None = None,
+    ):
         wallet_name = wallet_name or settings.wallet_name
-        wallet = Wallet(wallet_name)
+        kwargs = {"name": wallet_name}
+        if hotkey_name:
+            kwargs["hotkey"] = hotkey_name
+        wallet = Wallet(**kwargs)
         self.hotkey = wallet.hotkey
 
     def _create_wallet_token(self, hotkey: str, expiry_minutes: int = 1) -> str:

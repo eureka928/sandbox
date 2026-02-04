@@ -404,8 +404,22 @@ class BaselineRunner:
         amm_keywords = (
             r"(uniswap|sushiswap|curve|balancer|amm|dex" r"|swap.?router)"
         )
+        # Oracle/price-feed contexts — not actual swaps
+        oracle_context = (
+            r"(oracle|price.?feed|aggregator|chainlink"
+            r"|update.?price|get.?price)"
+        )
         if any(re.search(p, combined) for p in slippage_noise):
+            # Reject if no AMM keyword present
             if not re.search(amm_keywords, combined):
+                return True
+            # Reject if AMM keyword only appears in an
+            # oracle/price-feed context (not an actual swap)
+            if re.search(oracle_context, combined) and not re.search(
+                r"(swap|liquidity|remove.?liquidity"
+                r"|add.?liquidity|exchange\s*\(|router\.)",
+                combined,
+            ):
                 return True
 
         # Comment-vs-code mismatch
@@ -433,6 +447,159 @@ class BaselineRunner:
             r"anyone\s+can\s+call\s+(initializ|init\b)",
         ]
         if any(re.search(p, combined) for p in frontrun_init_patterns):
+            return True
+
+        # Unsafe block.timestamp deadline (not a real vuln)
+        deadline_patterns = [
+            r"block\.timestamp\s+(as|for)\s+deadline",
+            r"(unsafe|stale)\s+deadline.*block\.timestamp",
+            r"deadline.*block\.timestamp.*front.?run",
+        ]
+        if any(re.search(p, combined) for p in deadline_patterns):
+            return True
+
+        # Immutable variable can't be updated (design choice)
+        immutable_patterns = [
+            r"immutable.*cannot\s+be\s+(updated|changed|modified)",
+            r"no\s+(setter|update).*immutable",
+        ]
+        if any(re.search(p, combined) for p in immutable_patterns):
+            return True
+
+        # Unbounded loop DoS on view/read-only functions
+        if re.search(r"unbounded.*(loop|iteration)", combined):
+            if re.search(r"(view|pure|read.?only|getter)", combined):
+                return True
+
+        # Commented-out / stub / placeholder code as vulnerability
+        commented_code_patterns = [
+            r"(commented\s+out|stub|placeholder|empty\s+body)",
+            r"always\s+return(s)?\s+(a\s+)?1:1\s+ratio",
+            r"(function|logic)\s+(is\s+)?(commented|disabled|not\s+implemented)",
+        ]
+        if any(re.search(p, combined) for p in commented_code_patterns):
+            return True
+
+        # Admin misconfiguration: admin/owner sets parameter
+        # to invalid value — design/operational issue, not vuln
+        admin_misconfig_patterns = [
+            r"(admin|owner|deployer|governance)\s+"
+            r"(could|can|may)\s+(mistakenly|accidentally)",
+            r"(admin|owner|deployer)\s+sets?\s+.{0,40}"
+            r"(to\s+zero|to\s+0\b|invalid)",
+            r"(can|could)\s+be\s+set\s+to\s+zero\s+"
+            r"(by|causing|breaking|making)",
+        ]
+        if any(re.search(p, combined) for p in admin_misconfig_patterns):
+            return True
+
+        # Missing input validation on admin/privileged functions
+        # where "attacker" would need admin role
+        if re.search(
+            r"missing\s+(input\s+)?validation", combined
+        ) and re.search(
+            r"(addVault|setOracle|setParameter|setConfig"
+            r"|register|add.?Pool|set.?Address)",
+            combined,
+        ):
+            # Only filter if the function is admin-gated
+            if re.search(
+                r"(onlyOwner|onlyAdmin|onlyRole|authorized"
+                r"|access\s+control|admin|owner\s+can)",
+                combined,
+            ):
+                return True
+
+        # Proxy/delegatecall address(this) approval confusion
+        # In delegatecall context, address(this) is the proxy
+        # so approve(address(this)) + transferFrom is correct
+        if re.search(
+            r"(forceApprove|approve)\s*\(\s*address\s*\(" r"\s*this\s*\)",
+            combined,
+        ) and re.search(
+            r"(proxy|action|delegatecall|position\s*action"
+            r"|swap\s*action|pool\s*action)",
+            combined,
+        ):
+            return True
+
+        # Single point of failure / centralization risk
+        if re.search(
+            r"single.?point\s+(of\s+)?failure", combined
+        ) or re.search(r"(centralization|centralized)\s+risk", combined):
+            return True
+
+        # Zero-address validation inconsistency — low impact
+        if re.search(
+            r"(inconsistent|missing)\s+zero.?address" r"\s+(validation|check)",
+            combined,
+        ):
+            return True
+
+        # Whitelist / allowlist bypass when empty or
+        # unconfigured — design choice
+        if re.search(
+            r"(whitelist|allowlist)\s+bypass\s+" r"(when|if)\s+empty",
+            combined,
+        ):
+            return True
+
+        # Oracle staleness check missing / insufficient —
+        # known config issue, not exploitable vuln
+        if re.search(
+            r"(staleness|stale.?ness)\s+(check|validation)"
+            r"\s+(missing|insufficient|absent)",
+            combined,
+        ):
+            return True
+
+        # Missing slippage on non-swap operations (withdraw,
+        # redeem, deposit, cooldown) — these are not swaps
+        if (
+            re.search(
+                r"(missing|no|without|lack)\s+(of\s+)?slippage",
+                combined,
+            )
+            and re.search(
+                r"(withdraw|redeem|deposit|cooldown|unstake"
+                r"|undelegate|claim)",
+                combined,
+            )
+            and not re.search(
+                r"(swap|exchange|amm|dex|uniswap|curve" r"|aerodrome|router)",
+                combined,
+            )
+        ):
+            return True
+
+        # Unchecked return value with SafeERC20 / safe transfer
+        # SafeERC20 already reverts on failure
+        if re.search(r"unchecked\s+(return\s+)?value", combined) and re.search(
+            r"(safe.?transfer|safe.?approve|safeERC20" r"|forceApprove)",
+            combined,
+        ):
+            return True
+
+        # Incorrect approval / allowance pattern where the
+        # description claims "will fail" or "revert" but
+        # doesn't demonstrate actual exploit impact
+        if (
+            re.search(
+                r"(incorrect|wrong|flawed)\s+(token\s+)?"
+                r"(approval|allowance)",
+                combined,
+            )
+            and re.search(
+                r"(will\s+(fail|revert)|cause.*revert"
+                r"|transaction\s+to\s+revert)",
+                combined,
+            )
+            and not re.search(
+                r"(steal|drain|theft|loss\s+of\s+funds"
+                r"|attacker\s+(can|could)\s+transfer)",
+                combined,
+            )
+        ):
             return True
 
         return False
@@ -526,8 +693,13 @@ class BaselineRunner:
                 verified.extend(file_vulns)
                 continue
 
+            # Build related files context for cross-reference
+            related_sources = self._resolve_related_files(
+                file_path, source_code, file_vulns, files_content
+            )
+
             batch_verified, in_tok, out_tok = self._rerank_batch(
-                file_vulns, file_path, source_code
+                file_vulns, file_path, source_code, related_sources
             )
             verified.extend(batch_verified)
             total_in += in_tok
@@ -547,11 +719,73 @@ class BaselineRunner:
 
         return verified, total_in, total_out
 
+    def _resolve_related_files(
+        self,
+        file_path: str,
+        source_code: str,
+        file_vulns: list[Vulnerability],
+        files_content: dict[str, str],
+    ) -> dict[str, str]:
+        """Resolve imported and referenced files for context.
+
+        Returns up to 3 related files within a ~30K char budget.
+        """
+        MAX_RELATED_CHARS = 30_000
+        MAX_RELATED_FILES = 3
+
+        candidates = set()
+
+        # Extract Solidity import paths
+        for m in re.finditer(r'import\s+"([^"]+)"', source_code):
+            candidates.add(m.group(1))
+        for m in re.finditer(
+            r'import\s+\{[^}]+\}\s+from\s+"([^"]+)"',
+            source_code,
+        ):
+            candidates.add(m.group(1))
+
+        # Scan finding descriptions for references to other
+        # filenames in the project
+        all_filenames = {p.rsplit("/", 1)[-1]: p for p in files_content}
+        for v in file_vulns:
+            combined = f"{v.title} {v.description}"
+            for fname, fpath in all_filenames.items():
+                if fname in combined and fpath != file_path:
+                    candidates.add(fpath)
+
+        # Resolve import paths to actual project files
+        resolved = {}
+        for candidate in candidates:
+            # Try direct match
+            if candidate in files_content:
+                resolved[candidate] = files_content[candidate]
+                continue
+            # Try matching by filename suffix
+            cname = candidate.rsplit("/", 1)[-1]
+            for proj_path, content in files_content.items():
+                if proj_path.endswith(cname) and proj_path != file_path:
+                    resolved[proj_path] = content
+                    break
+
+        # Trim to budget
+        selected = {}
+        total_chars = 0
+        for path, content in sorted(resolved.items(), key=lambda x: len(x[1])):
+            if len(selected) >= MAX_RELATED_FILES:
+                break
+            if total_chars + len(content) > MAX_RELATED_CHARS:
+                continue
+            selected[path] = content
+            total_chars += len(content)
+
+        return selected
+
     def _rerank_batch(
         self,
         vulnerabilities: list[Vulnerability],
         file_path: str,
         source_code: str,
+        related_sources: dict[str, str] | None = None,
     ) -> tuple[list[Vulnerability], int, int]:
         """Verify a batch of findings for one file against its
         source code.
@@ -576,17 +810,37 @@ class BaselineRunner:
 
         system_prompt = dedent("""
             You are an adversarial smart contract security
-            reviewer. Your job is to REJECT false positives.
-            Default to REJECT — only KEEP a finding if you can
-            confirm a concrete, exploitable vulnerability.
+            reviewer. Your job is to separate real
+            vulnerabilities from false positives.
+
+            ## VERIFICATION METHOD — follow these steps:
+            1. Find the function/code mentioned in the
+               finding in the source. If the function or
+               pattern does not exist, REJECT.
+            2. Check if the function has access control
+               modifiers ON THE FUNCTION ITSELF (onlyOwner,
+               onlyAdmin, onlyRole, auth, etc.). Do NOT
+               assume access control exists — verify it by
+               reading the function signature.
+            3. If the finding describes a multi-step attack,
+               trace the full execution path: external
+               entry point -> internal calls -> state changes.
+               An internal function is reachable if any
+               external/public function calls it.
+            4. Verify the described impact against the actual
+               code. If the finding claims "fund loss" or
+               "fee avoidance", check whether the state
+               change actually affects balances or fees.
 
             ## AUTOMATIC REJECT — discard immediately if:
             1. The described code pattern does NOT exist in
                the source file
-            2. The function has access control modifiers
-               (onlyOwner, onlyAdmin, creditManagerOnly,
-               onlyRole, auth, etc.) and the finding claims
-               "anyone can call" or "missing access control"
+            2. The function ITSELF has access control
+               modifiers (onlyOwner, onlyAdmin,
+               creditManagerOnly, onlyRole, auth, etc.)
+               AND the finding claims "anyone can call" —
+               but ONLY reject if the modifier is directly
+               on that function, not assumed from context
             3. The finding mentions missing slippage /
                price-manipulation protection but no swap,
                AMM, or price oracle interaction exists in
@@ -595,9 +849,10 @@ class BaselineRunner:
                code uses ReentrancyGuard, nonReentrant, or
                follows checks-effects-interactions (state
                updated before external call)
-            5. The finding targets an abstract contract,
-               interface, or function with no implementation
-               body
+            5. The finding targets a pure interface (no
+               implementation). But DO NOT reject findings
+               on abstract or base contracts if they have
+               implemented functions with real logic
             6. The finding is about admin/owner trust
                assumptions (e.g., "owner could rug") —
                these are design choices, not vulnerabilities
@@ -626,17 +881,46 @@ class BaselineRunner:
             15. The finding claims a function can be front-run
                 but it is called atomically by a factory or
                 within a batch transaction
+            16. The finding claims a math formula is wrong
+                (e.g., missing division, overflow) but you
+                can verify the formula IS correct by reading
+                the actual code
+            17. The finding targets a mock or test contract
+                (file/contract name contains Mock, Test, or
+                is in a test directory)
 
-            ## KEEP ONLY IF all of these are true:
-            1. You can quote the specific vulnerable line(s)
-               from the source code
-            2. There is a concrete, step-by-step exploit path
-               (not hypothetical)
-            3. No existing guard, modifier, or check prevents
-               the exploit
-            4. The exploit path is unambiguous with no
-               assumptions about external state, caller
-               behavior, or admin compromise
+            ## KEEP IF any of these patterns are confirmed:
+            A. You can quote vulnerable line(s) AND there is
+               a concrete exploit path with no existing guard
+            B. A public/external function modifies state
+               (storage writes, token transfers) WITHOUT
+               access control, and an attacker calling it
+               causes economic harm (fee avoidance, balance
+               manipulation, token theft)
+            C. A function accepts an attacker-controlled
+               address parameter (e.g., `from`, `to`,
+               `recipient`) and uses it in token transfers
+               without verifying msg.sender == parameter
+            D. A missing state update causes downstream
+               accounting errors (e.g., _deployedAmount not
+               updated, index not advanced with balance)
+            E. An internal function called by an external
+               entry point without access control can
+               transfer tokens using third-party allowances
+
+            ## IMPORTANT ANALYSIS RULES
+            - Do NOT assume access control exists — read the
+              actual function signature and modifiers
+            - Trace internal functions to their external
+              callers: if an internal function handles funds
+              and its external caller has no access control,
+              the internal function IS reachable by anyone
+            - For base/abstract contracts: vulnerabilities
+              in implemented functions are real even if the
+              contract is abstract — subclasses inherit them
+            - Verify claims against the code: if a finding
+              says "fee calculation is wrong", check the
+              actual formula in the code before deciding
 
             ## OUTPUT FORMAT
             Output valid JSON with this structure:
@@ -652,8 +936,17 @@ class BaselineRunner:
             }
 
             IMPORTANT: Output ONLY valid JSON. Include ALL
-            finding IDs. When in doubt, REJECT.
+            finding IDs.
         """)
+
+        # Build related files section
+        related_section = ""
+        if related_sources:
+            related_section = (
+                "\n\n## Related Source Files " "(for cross-reference)\n"
+            )
+            for rpath, rcontent in related_sources.items():
+                related_section += f"### {rpath}\n```\n{rcontent}\n```\n\n"
 
         user_prompt = dedent(f"""
             Verify these findings against the source code.
@@ -662,12 +955,15 @@ class BaselineRunner:
             ```
             {source_code}
             ```
-
+            {related_section}
             ## Findings to Verify
             {findings_text}
 
             For each finding, check if the described
             vulnerability actually exists in the code above.
+            Use the related source files to verify cross-file
+            claims (e.g., access control modifiers defined in
+            base contracts).
         """)
 
         try:
@@ -708,37 +1004,54 @@ class BaselineRunner:
     def deduplicate_by_type(
         self, vulnerabilities: list[Vulnerability]
     ) -> list[Vulnerability]:
-        """Deduplicate findings: keep top finding per (file, vulnerability_type) group."""
+        """Deduplicate findings: keep top finding per
+        (file, vulnerability_type) or (file, location) group."""
         from collections import defaultdict
 
-        groups = defaultdict(list)
+        severity_order = {
+            "critical": 0,
+            "high": 1,
+            "medium": 2,
+            "low": 3,
+        }
+
+        def sort_key(x):
+            return (
+                severity_order.get(x.severity.value, 4),
+                -x.confidence,
+            )
+
+        # First pass: deduplicate by (file, location) to catch
+        # same root cause reported under different vuln types
+        loc_groups = defaultdict(list)
         for v in vulnerabilities:
-            key = (v.file, v.vulnerability_type)
-            groups[key].append(v)
+            loc_key = (v.file, v.location)
+            loc_groups[loc_key].append(v)
+
+        loc_deduped = []
+        loc_dedup_count = 0
+        for key, group in loc_groups.items():
+            group.sort(key=sort_key)
+            loc_deduped.append(group[0])
+            loc_dedup_count += len(group) - 1
+
+        # Second pass: deduplicate by (file, vulnerability_type)
+        type_groups = defaultdict(list)
+        for v in loc_deduped:
+            type_key = (v.file, v.vulnerability_type)
+            type_groups[type_key].append(v)
 
         deduped = []
-        dedup_count = 0
-        for key, group in groups.items():
-            # Sort by severity priority then confidence
-            severity_order = {
-                "critical": 0,
-                "high": 1,
-                "medium": 2,
-                "low": 3,
-            }
-            group.sort(
-                key=lambda x: (
-                    severity_order.get(x.severity.value, 4),
-                    -x.confidence,
-                )
-            )
-            # Keep top 1 per group to minimize false positives
+        type_dedup_count = 0
+        for key, group in type_groups.items():
+            group.sort(key=sort_key)
             deduped.append(group[0])
-            dedup_count += len(group) - 1
+            type_dedup_count += len(group) - 1
 
-        if dedup_count > 0:
+        total_dedup = loc_dedup_count + type_dedup_count
+        if total_dedup > 0:
             console.print(
-                f"[dim]  → Deduplicated {dedup_count} "
+                f"[dim]  → Deduplicated {total_dedup} "
                 f"redundant findings[/dim]"
             )
 
@@ -748,7 +1061,7 @@ class BaselineRunner:
         self, vulnerabilities: Vulnerabilities, file_path: str
     ) -> Vulnerabilities:
         """Post-process vulnerabilities: filter by confidence and standardize locations."""
-        confidence_threshold = 0.83
+        confidence_threshold = 0.87
         filtered = []
         filtered_count = 0
         noise_count = 0
@@ -787,13 +1100,101 @@ class BaselineRunner:
                 r"\bunder (certain|specific) " r"(conditions|circumstances)\b",
                 r"\bif .{0,30} sets? .{0,20} to zero\b",
             ]
-            desc_lower = v.description.lower()
+            # Use title + description for penalty matching
+            desc_lower = f"{v.title} {v.description}".lower()
             vague_hits = sum(
                 1 for p in vague_patterns if re.search(p, desc_lower)
             )
             calibrated_confidence = max(
                 0.0, calibrated_confidence - (0.1 * vague_hits)
             )
+
+            # Penalize inflated severity: critical/high claims
+            # with only bounded/theoretical impact
+            if v.severity.value in ("critical", "high"):
+                low_impact_patterns = [
+                    r"\b(1\s+wei|dust|negligible|rounding)\b",
+                    r"\bonly\s+(the\s+)?(owner|admin|deployer)\b",
+                    r"\b(view|pure|read.?only)\s+function\b",
+                    r"\bno\s+(direct\s+)?fund\s+loss\b",
+                ]
+                severity_hits = sum(
+                    1 for p in low_impact_patterns if re.search(p, desc_lower)
+                )
+                if severity_hits > 0:
+                    calibrated_confidence = max(
+                        0.0,
+                        calibrated_confidence - (0.15 * severity_hits),
+                    )
+
+            # Penalize admin/operator misconfiguration framing
+            admin_framing = [
+                r"\b(admin|owner|deployer|operator)\s+"
+                r"(could|can|may)\s+(mistakenly|accidentally"
+                r"|inadvertently)",
+                r"\bby\s+mistake\b",
+                r"\bif\s+(the\s+)?(admin|owner)\s+"
+                r"(sets?|configures?|passes?)\b",
+            ]
+            admin_hits = sum(
+                1 for p in admin_framing if re.search(p, desc_lower)
+            )
+            if admin_hits > 0:
+                calibrated_confidence = max(
+                    0.0,
+                    calibrated_confidence - (0.15 * admin_hits),
+                )
+
+            # Penalize transferFrom-in-proxy-context FPs
+            # where the description claims approval will fail
+            # but the contract operates via delegatecall
+            if (
+                re.search(
+                    r"(will\s+fail|revert|cause.*fail)",
+                    desc_lower,
+                )
+                and re.search(
+                    r"(approv|allowance|transferfrom)",
+                    desc_lower,
+                )
+                and re.search(
+                    r"(proxy|action|delegatecall)",
+                    desc_lower,
+                )
+            ):
+                calibrated_confidence = max(0.0, calibrated_confidence - 0.15)
+
+            # Penalize "unvalidated external call" on targets
+            # set via constructor/admin (immutable or storage)
+            if re.search(
+                r"unvalidated\s+(external\s+)?(call|staticcall)",
+                desc_lower,
+            ) and re.search(
+                r"(constructor|immutable|admin|owner|set\s+by"
+                r"|configured|initialized)",
+                desc_lower,
+            ):
+                calibrated_confidence = max(0.0, calibrated_confidence - 0.15)
+
+            # Penalize "incorrect" claims without exploit path
+            if re.search(
+                r"\b(incorrect|wrong|flawed)\s+"
+                r"(calculation|computation|formula|logic"
+                r"|handling|comparison|validation)\b",
+                desc_lower,
+            ) and not re.search(
+                r"(attacker|exploit|steal|drain|loss\s+of"
+                r"|profit|arbitrage|manipulat)",
+                desc_lower,
+            ):
+                calibrated_confidence = max(0.0, calibrated_confidence - 0.1)
+
+            # Penalize "potential precision loss" findings
+            if re.search(
+                r"(potential|possible)\s+precision\s+loss",
+                desc_lower,
+            ):
+                calibrated_confidence = max(0.0, calibrated_confidence - 0.15)
 
             v.confidence = round(calibrated_confidence, 2)
 
@@ -933,6 +1334,36 @@ class BaselineRunner:
                fund path: amount taken from user -> amount used -> refund. If the amount taken
                already accounts for partial fills, an additional refund creates double-counting
                and protocol loss.
+
+            8. **Public function abuse / allowance drain**: When a contract (like
+               a router or vault) holds ERC20 allowances from users, check if
+               any public function can be called by a third party to transfer
+               those approved tokens. Specifically: if users approve() the
+               contract, can an attacker call a function that triggers
+               transferFrom() with the user's address as `from`? Check
+               pullTokens, deposit-on-behalf, permit-based transfers.
+
+            9. **Fee avoidance via public harvest/sync**: If harvest(), sync(),
+               or update functions are public and reset accounting state
+               (balances, timestamps, deployed amounts), can a caller time
+               these calls to avoid performance fees or inflate their share
+               of rewards?
+
+            ## OMISSION BUGS — CHECK FOR MISSING CODE
+            These are bugs where the vulnerability is a MISSING line, not a wrong line:
+            1. **Return value unit mismatch**: Does the function return shares
+               when callers expect underlying assets, or vice versa? Check
+               _deploy(), _undeploy(), _getBalance() — do they return the
+               same unit (assets vs shares) consistently?
+            2. **Missing state update after mutation**: After withdraw/undeploy/
+               transfer, is the tracking variable (_deployedAmount, totalDebt,
+               etc.) updated to reflect the change? If not, downstream
+               calculations (fees, exchange rates) will be wrong.
+            3. **Missing validation on public entry points**: If a function is
+               public/external without access control, can an arbitrary caller
+               trigger unintended economic effects? (e.g., calling harvest()
+               to reset fee counters, or using router allowances to transfer
+               someone else's tokens)
 
             ## EXAMPLE GOOD DESCRIPTION
             "In Vault.sol, the withdraw() function updates the user balance after calling
@@ -1295,6 +1726,28 @@ class BaselineRunner:
         )
         total_input_tokens += rerank_in
         total_output_tokens += rerank_out
+
+        # Cap total findings to reduce false positive noise
+        MAX_FINDINGS = 8
+        if len(vulns) > MAX_FINDINGS:
+            sev_order = {
+                "critical": 0,
+                "high": 1,
+                "medium": 2,
+                "low": 3,
+            }
+            vulns.sort(
+                key=lambda x: (
+                    sev_order.get(x.severity.value, 4),
+                    -x.confidence,
+                )
+            )
+            dropped = len(vulns) - MAX_FINDINGS
+            vulns = vulns[:MAX_FINDINGS]
+            console.print(
+                f"[dim]  → Capped to top {MAX_FINDINGS} "
+                f"findings (dropped {dropped})[/dim]"
+            )
 
         result = AnalysisResult(
             project=project_name,

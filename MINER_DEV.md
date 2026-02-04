@@ -4,15 +4,23 @@ Local development workflow for testing the miner agent and scorer without the fu
 
 ## Prerequisites
 
-- Python 3.10+ with venv
-- `CHUTES_API_KEY` set in `.env` (required for both inference and scoring)
+- Python 3.13 ([uv](https://docs.astral.sh/uv/) recommended)
+- Docker runtime ([docker.com](https://docker.com))
+- `CHUTES_API_KEY` — register at [chutes.ai](https://chutes.ai/) for inference access
+- Minimum 32GB RAM and 512GB SSD for running agent sandboxes locally
 
 ## Setup
 
 ```bash
-python -m venv env && source env/bin/activate
-pip install -U pip
-pip install -r requirements.txt
+uv venv --python 3.13
+source .venv/bin/activate
+uv pip install -r requirements.txt
+```
+
+Create a `.env` file with your API key:
+
+```
+CHUTES_API_KEY=cpk_...
 ```
 
 ## Starting the Inference Proxy
@@ -22,7 +30,7 @@ The miner agent calls an inference proxy that routes requests to the Chutes LLM 
 ### Option A: Run directly (no Docker)
 
 ```bash
-source env/bin/activate
+source .venv/bin/activate
 export CHUTES_API_KEY=$(grep CHUTES_API_KEY .env | cut -d= -f2)
 cd validator/proxy
 uvicorn api:app --host 0.0.0.0 --port 8087 --workers 1
@@ -93,6 +101,15 @@ Defined in `miner/projects.json`:
 | `code4rena_lambowin_2025_02` | Lambo.win |
 | `code4rena_loopfi_2025_02` | LoopFi |
 | `code4rena_secondswap_2025_02` | SecondSwap |
+| `code4rena_bakerfi-invitational_2025_02` | BakerFi Invitational |
+| `code4rena_kinetiq_2025_07` | Kinetiq |
+| `code4rena_covenant_2025_10` | Covenant |
+| `code4rena_sequence_2025_11` | Sequence |
+| `code4rena_hybra-finance_2025_10` | Hybra Finance |
+| `code4rena_panoptic_2025_12` | Panoptic |
+| `code4rena_sukukfi_2025_11` | SukukFi |
+| `code4rena_ekubo_2025_11` | Ekubo |
+| `code4rena_brix-money_2025_11` | Brix Money |
 
 Projects are automatically downloaded from GitHub on first run.
 
@@ -112,6 +129,30 @@ Project          Findings  Detection  Precision    F1  TP/FN/FP
 secondswap_2025       28      33.3%       3.6%  6.5%    1/2/27
 ```
 
+## Running in Production
+
+```bash
+# Run via Docker (recommended for production)
+python bitsec.py miner run
+
+# Run without Docker
+LOCAL=true python validator/sandbox_manager.py
+```
+
+## Submitting Your Agent
+
+Register your miner and submit agent code to the platform:
+
+```bash
+# Register miner
+./bitsec.py miner create miner@example.com "Your Name" --wallet wallet_name
+
+# Submit agent (limited to 1 submission per day)
+./bitsec.py miner submit --wallet wallet_name
+```
+
+If you experience authorization errors, create a new hotkey and re-run registration.
+
 ## Architecture
 
 ```
@@ -124,8 +165,8 @@ bitsec.py miner test-local
 
 - **Miner agent** (`miner/agent.py`): Sends each source file to the LLM via the inference proxy, parses vulnerability findings
 - **Inference proxy** (`validator/proxy/`): FastAPI app that forwards requests to Chutes API (`https://llm.chutes.ai`)
-- **Scorer** (`validator/scorer.py`): Uses LLM to match agent findings against curated benchmark (`validator/curated-highs-only-2025-08-08.json`)
-- **Model**: `deepseek-ai/DeepSeek-V3-0324` (hardcoded in agent config)
+- **Scorer** (`validator/scorer.py`): Uses LLM to match agent findings against curated benchmark
+- **Model**: `deepseek-ai/DeepSeek-V3.2` (hardcoded in agent config)
 
 ## Troubleshooting
 
@@ -148,3 +189,11 @@ The scorer also needs `CHUTES_API_KEY`. Use `--skip-scoring` to test the miner w
 ### Agent exits with code 1
 
 Check the proxy logs for Chutes API errors (rate limits, invalid key, model unavailable). The test runner catches per-project failures and continues to the next project.
+
+### Authorization errors on submit
+
+Create a new hotkey and re-run the `miner create` registration command.
+
+## Support
+
+Contact via [Bittensor Discord](https://discord.gg/bittensor) or direct message the Bitsec team.

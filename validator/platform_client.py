@@ -238,6 +238,10 @@ class MockPlatformClient:
                 "cantina_minimal-delegation_2025_04",
                 "code4rena_kinetiq_2025_07",
                 "cantina_smart-contract-audit-of-tn-contracts_2025_08",
+                "code4rena_forte-float128-solidity-library_2025_04",
+                "sherlock_perennial_v2_update_3_2024_08",
+                "sherlock_axion_2025_01",
+                "sherlock_oku_2024_12",
             ]
         }
         return agent

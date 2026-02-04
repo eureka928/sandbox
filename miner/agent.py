@@ -77,6 +77,338 @@ class AnalysisResult(BaseModel):
     token_usage: dict[str, int]
 
 
+PHASE_0_BLOCK = """\
+## PHASE 0 — DESIGN INFERENCE (mandatory)
+Before looking for vulnerabilities, understand what this code does:
+1. What is the contract's role in the protocol?
+   (vault, router, token, oracle, staking, governance, etc.)
+2. What are the critical invariants?
+   (e.g., "total shares must equal sum of user shares",
+    "only owner can withdraw", "price must be positive")
+3. What external protocols does it interact with?
+   (Uniswap, Aave, Chainlink, custom contracts, etc.)
+4. What are the trust boundaries?
+   (who can call what, what inputs are user-controlled
+    vs admin-controlled vs computed)
+
+Use this understanding to guide your vulnerability search.
+Do NOT report this analysis — use it internally only.
+"""
+
+DO_NOT_REPORT = """\
+## DO NOT REPORT (these are NOT vulnerabilities)
+- Gas optimizations (unless causes actual DoS)
+- Code style or naming issues
+- Theoretical issues without a concrete exploit path
+- Missing zero-address checks on constructor/initializer/admin parameters
+- Missing input validation that has no security impact
+- Centralization risks or admin trust assumptions (admin privileges \
+are by design)
+- Events not being emitted
+- Reentrancy where the contract uses ReentrancyGuard or \
+checks-effects-interactions correctly
+- Issues in interface definitions (interfaces have no implementation)
+- Known patterns from OpenZeppelin or other audited libraries
+- Speculative overflow/underflow in Solidity >=0.8.0 (has built-in \
+overflow checks)
+- "Missing access control" on functions protected by modifiers \
+(onlyOwner, onlyAdmin)
+- Ownership renouncement or immutability patterns (these are \
+intentional design choices)
+- Error message text inconsistencies
+- Issues requiring admin/owner compromise as a precondition
+- Issues requiring miner/validator collusion or block manipulation
+- Uninitialized state that is set during initialize() or constructor
+- Generic MEV/front-running/sandwich on functions that do NOT \
+interact with AMMs, DEXes, or price oracles
+- Slippage concerns where minOut/minAmount is a caller-controlled \
+parameter — the function provides the option, it is the \
+caller's responsibility to set a safe value
+- Claims that code contradicts comments or NatSpec — comments \
+can be outdated; audit the CODE, not the comments
+- Claims a boolean condition is inverted without a concrete \
+trace proving the correct behavior
+- Memory vs storage confusion — only report if you can show \
+concrete state corruption
+- "Uninitialized mapping/storage" claims — Solidity \
+zero-initializes all storage by default
+- Front-running initialize()/init() of clone/proxy contracts \
+deployed via factories (factory calls init atomically)
+- Cooldown mechanisms, time delays, conversion rate functions, \
+or emergency governance functions as vulnerabilities — these \
+are intentional protocol design patterns
+- "Unchecked return value" for internal calls or SafeERC20 \
+patterns in Solidity >=0.8
+"""
+
+SHARED_FORMAT_HEADER = """\
+## CRITICAL: QUALITY OVER QUANTITY
+Only report vulnerabilities where you can describe a specific, \
+step-by-step exploit.
+A good finding has: attacker action -> vulnerable code path -> \
+concrete impact (fund loss, state corruption, DoS).
+If you cannot describe the exploit steps, do NOT report it.
+
+## DESCRIPTION REQUIREMENTS (CRITICAL FOR MATCHING)
+Each finding description MUST include these elements:
+1. **Filename**: Include the source filename
+2. **Function call pattern**: Reference functions as \
+`functionName()`
+3. **Core mechanism**: The specific flaw
+4. **Impact**: Concrete consequence
+5. **Exploit path**: Brief step-by-step attack scenario
+
+## LOCATION FORMAT
+Use: `ContractName.functionName` (e.g., `Vault.withdraw`)
+
+## VULNERABILITY TYPES (use exact names)
+reentrancy, access-control, integer-overflow, flash-loan-attack,
+front-running, denial-of-service, logic-error, oracle-manipulation,
+precision-loss, unchecked-external-call, storage-collision
+
+## SEVERITY
+- critical: Direct fund loss, no preconditions
+- high: Fund loss with conditions, protocol disruption
+- medium: Limited loss, multiple steps required
+- low: Minor issues, theoretical only
+
+## CONFIDENCE (0.0-1.0)
+- 0.9+: Definite vulnerability with clear exploit
+- 0.8-0.9: High confidence, minor uncertainty
+- 0.75-0.8: Confident but needs specific conditions
+- Only report if confidence >= 0.75
+
+## CRITICAL: AVOID DUPLICATES
+Do NOT report multiple variations of the same underlying issue.
+If a bug affects multiple functions, report it ONCE at the root \
+cause location.
+Report at most 2-3 findings for this prompt domain.
+
+## BEFORE REPORTING, VERIFY EACH FINDING
+For every potential finding, ask yourself:
+1. Did I trace the FULL execution path, including modifiers
+   and callers, not just one function in isolation?
+2. Is the "vulnerable" parameter actually controlled by an
+   attacker, or only by the caller/admin?
+3. Does a modifier, require(), or earlier check already
+   prevent the attack I am describing?
+4. Am I flagging a DESIGN CHOICE (cooldown, conversion
+   rate, emergency function) as a bug?
+5. Am I trusting a CODE COMMENT over the actual code?
+If ANY answer disqualifies the finding, do NOT report it.
+"""
+
+
+def _build_audit_prompt(domain_section: str, format_instructions: str) -> str:
+    """Build a complete audit prompt from domain-specific section."""
+    return (
+        "You are an expert smart contract security auditor. "
+        "Find EXPLOITABLE vulnerabilities with concrete attack "
+        "paths.\n\n"
+        + PHASE_0_BLOCK
+        + "\n"
+        + SHARED_FORMAT_HEADER
+        + "\n"
+        + domain_section
+        + "\n"
+        + DO_NOT_REPORT
+        + "\n"
+        + format_instructions
+        + "\n\n"
+        + "IMPORTANT: Output ONLY valid JSON. Begin with "
+        + '`{"vulnerabilities":`'
+    )
+
+
+AUDIT_DOMAIN_1_CORE_SAFETY = """\
+## HIGH-VALUE PATTERNS — Core Safety
+Focus on fundamental smart contract safety issues:
+
+1. **Reentrancy**: State updated AFTER external calls \
+(transfers, low-level calls). Check if ReentrancyGuard or \
+checks-effects-interactions is missing.
+2. **Access control gaps**: Public/external functions that \
+modify critical state without onlyOwner/onlyRole/auth \
+modifiers. Trace internal helpers to their external callers.
+3. **Integer overflow in Solidity <0.8**: Unchecked math in \
+contracts using older pragma. In >=0.8, only flag unchecked{} \
+blocks with actual overflow risk.
+4. **Unchecked external calls**: Low-level call/delegatecall \
+where return value is not checked, leading to silent failures \
+that corrupt state.
+5. **Storage collision**: Proxy/upgrade patterns where storage \
+layouts conflict between implementation versions.
+
+## OMISSION BUGS — Core Safety
+1. **Missing state update after external interaction**: After \
+a token transfer or external call succeeds, is the tracking \
+variable updated? If not, replay or double-spend is possible.
+2. **Missing access control on destructive functions**: \
+selfdestruct, delegatecall targets, or upgrade functions \
+without auth modifiers.
+"""
+
+AUDIT_DOMAIN_2_VESTING_CLAIMS = """\
+## HIGH-VALUE PATTERNS — Vesting & Claims
+Focus on token vesting, release schedules, and claiming logic:
+
+1. **Incorrect formula after partial claim**: When \
+transferring or splitting vesting positions, check if \
+recalculations use ORIGINAL totals instead of REMAINING \
+amounts. E.g., `releaseRate = totalAmount / steps` is wrong \
+if some amount was already claimed; should be \
+`(totalAmount - amountClaimed) / (steps - stepsClaimed)`.
+2. **Claim amount exceeds available**: Can a beneficiary \
+claim more tokens than they are entitled to? Check the \
+calculation of claimable amount vs total allocation.
+3. **Transfer-after-partial-claim errors**: When a vesting \
+position is transferred, does the new owner inherit the \
+correct remaining amount, or can they re-claim already-\
+claimed tokens?
+4. **Cliff/step boundary off-by-one**: Check if vesting \
+cliff or step calculations have off-by-one errors allowing \
+early or late claims.
+
+## OMISSION BUGS — Vesting & Claims
+1. **Missing amountClaimed update**: After a successful \
+claim, is the claimed amount properly tracked?
+2. **Missing revocation of unvested tokens**: In revocable \
+vesting, are unvested tokens properly returned?
+"""
+
+AUDIT_DOMAIN_3_REWARD_DISTRIBUTION = """\
+## HIGH-VALUE PATTERNS — Reward Distribution
+Focus on fee/reward math, distribution indexes, and share \
+accounting:
+
+1. **Rounding-induced reward loss**: When distributing \
+rewards, if `deltaIndex = accrued / totalShares` rounds to \
+zero but `lastBalance` is still advanced, those rewards are \
+permanently lost. Index and balance must advance together \
+or not at all.
+2. **Share dilution attacks**: Can an early depositor with \
+1 wei of shares manipulate the reward index to steal from \
+later depositors?
+3. **Fee avoidance via public harvest/sync**: If harvest(), \
+sync(), or update functions are public and reset accounting \
+state, can a caller time these calls to avoid performance \
+fees or inflate their share of rewards?
+4. **Incorrect fee-on-transfer handling**: Does the contract \
+account for tokens that take a fee on transfer, or does it \
+assume received == sent?
+
+## OMISSION BUGS — Reward Distribution
+1. **Missing index update before share change**: When \
+minting or burning shares, is the reward index updated \
+first? If not, the new/removed shares earn/lose rewards \
+they shouldn't.
+2. **Missing accrual before claim**: Are pending rewards \
+accrued before allowing a claim?
+"""
+
+AUDIT_DOMAIN_4_LIQUIDATION_PNL = """\
+## HIGH-VALUE PATTERNS — Liquidation & PnL
+Focus on liquidation thresholds, profit/loss accounting, \
+and collateral handling:
+
+1. **Incorrect liquidation threshold**: Is the liquidation \
+condition checking the right ratio? Can healthy positions \
+be liquidated or unhealthy ones escape liquidation?
+2. **Profit vs loss accounting errors**: When calculating \
+PnL across contracts, verify credits and debits sum \
+correctly. Check sign handling (positive vs negative).
+3. **Collateral not released after liquidation**: After a \
+position is liquidated, is remaining collateral returned \
+to the user?
+4. **Liquidation bonus overflow**: Can the liquidation \
+bonus exceed the available collateral, causing underflow?
+5. **Self-liquidation for profit**: Can a user liquidate \
+their own position to extract the liquidation bonus?
+
+## OMISSION BUGS — Liquidation & PnL
+1. **Missing bad debt handling**: When liquidation doesn't \
+cover the debt, is the shortfall socialized or does it \
+corrupt protocol accounting?
+2. **Missing position deletion after full liquidation**: \
+Is the position struct cleaned up, or can it be \
+re-liquidated?
+"""
+
+AUDIT_DOMAIN_5_DEPOSIT_MINTING = """\
+## HIGH-VALUE PATTERNS — Deposit & Minting
+Focus on deposit/withdraw flows, share minting/burning, \
+and exchange rate manipulation:
+
+1. **First-depositor / inflation attack**: Can the first \
+depositor manipulate the exchange rate by depositing 1 wei \
+then donating a large amount, causing subsequent depositors \
+to receive 0 shares? Check if there's a minimum deposit \
+or virtual offset.
+2. **Exchange rate manipulation via direct transfer**: Can \
+sending tokens directly to the vault inflate the share \
+price, causing rounding theft?
+3. **Withdraw more than deposited**: Does the withdraw \
+path correctly calculate the user's entitlement based on \
+shares, not on deposit amount?
+4. **Deposit/withdraw reentrancy**: In deposit() or \
+withdraw(), is state updated before the external token \
+transfer?
+
+## OMISSION BUGS — Deposit & Minting
+1. **Return value unit mismatch**: Does the function \
+return shares when callers expect underlying assets, or \
+vice versa? Check _deploy(), _undeploy(), _getBalance() \
+for consistency.
+2. **Missing _deployedAmount update**: After undeploy or \
+withdraw, is the tracking variable updated?
+3. **Missing totalSupply check**: Can withdraw/redeem \
+proceed when totalSupply is zero, causing division by zero?
+"""
+
+AUDIT_DOMAIN_6_INTERFACE_COMPAT = """\
+## HIGH-VALUE PATTERNS — Interface Compatibility
+Focus on ERC standards compliance, callback handling, and \
+token interaction patterns:
+
+1. **Wrong token ordering assumptions**: When interacting \
+with DEX pools (Uniswap V2/V3), verify the code queries \
+actual token ordering via `token0()`/`token1()` rather \
+than assuming a fixed position. Tokens are sorted \
+lexicographically; hardcoded assumptions break.
+2. **Missing ERC20 approval reset**: Some tokens (USDT) \
+require approval to be set to 0 before setting a new \
+value. Check if the contract handles this.
+3. **Callback reentrancy via ERC721/ERC1155**: \
+safeTransferFrom triggers onERC721Received/onERC1155\
+Received callbacks. Is state updated before the transfer?
+4. **Front-runnable deterministic deployments**: Factory \
+contracts using CREATE2 produce predictable addresses. If \
+subsequent calls (e.g., `createPair()`) depend on that \
+address, an attacker can front-run and DoS the factory.
+5. **Public function abuse / allowance drain**: When a \
+contract holds ERC20 allowances from users, check if any \
+public function lets a third party trigger transferFrom() \
+with another user's address as `from`.
+
+## OMISSION BUGS — Interface Compatibility
+1. **Missing approval before transferFrom**: Does the \
+contract approve tokens before calling transferFrom on \
+behalf of users?
+2. **Missing callback support**: If the contract should \
+accept ERC721/ERC1155 tokens, does it implement the \
+required receiver interfaces?
+"""
+
+AUDIT_PROMPTS = [
+    ("core_safety", AUDIT_DOMAIN_1_CORE_SAFETY),
+    ("vesting_claims", AUDIT_DOMAIN_2_VESTING_CLAIMS),
+    ("reward_distribution", AUDIT_DOMAIN_3_REWARD_DISTRIBUTION),
+    ("liquidation_pnl", AUDIT_DOMAIN_4_LIQUIDATION_PNL),
+    ("deposit_minting", AUDIT_DOMAIN_5_DEPOSIT_MINTING),
+    ("interface_compat", AUDIT_DOMAIN_6_INTERFACE_COMPAT),
+]
+
+
 class BaselineRunner:
     def __init__(
         self, config: dict[str, Any] | None = None, inference_api: str = None
@@ -726,7 +1058,83 @@ class BaselineRunner:
         file_vulns: list[Vulnerability],
         files_content: dict[str, str],
     ) -> dict[str, str]:
-        """Resolve imported and referenced files for context.
+        """Use LLM to select related files for context.
+
+        Returns up to 3 related files within a ~30K char budget.
+        """
+        MAX_RELATED_CHARS = 30_000
+        MAX_RELATED_FILES = 3
+
+        # Build list of available files (exclude current)
+        available = [p for p in files_content if p != file_path]
+        if not available:
+            return {}
+
+        # Ask LLM which files are most relevant
+        file_list = "\n".join(f"- {p}" for p in available)
+        findings_summary = "\n".join(
+            f"- {v.title} ({v.vulnerability_type})" for v in file_vulns
+        )
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You select related source files for "
+                    "security audit context. Output ONLY a "
+                    "JSON array of file paths."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"File being audited: {file_path}\n\n"
+                    f"Findings to verify:\n"
+                    f"{findings_summary}\n\n"
+                    f"Available files:\n{file_list}\n\n"
+                    f"Select up to {MAX_RELATED_FILES} files "
+                    f"most relevant for verifying these "
+                    f"findings (parent contracts, imported "
+                    f"dependencies, contracts that interact "
+                    f"with this one). Output JSON array of "
+                    f"paths."
+                ),
+            },
+        ]
+
+        try:
+            response = self.inference(messages=messages)
+            content = response["content"].strip()
+            selected_paths = json.loads(
+                self.clean_json_response(content)
+                if not content.startswith("[")
+                else content
+            )
+        except Exception:
+            # Fallback to regex-based resolution
+            return self._resolve_related_files_regex(
+                file_path, source_code, file_vulns, files_content
+            )
+
+        # Collect within budget
+        result = {}
+        total_chars = 0
+        for p in selected_paths:
+            if p in files_content and p != file_path:
+                file_content = files_content[p]
+                if total_chars + len(file_content) <= MAX_RELATED_CHARS:
+                    result[p] = file_content
+                    total_chars += len(file_content)
+        return result
+
+    def _resolve_related_files_regex(
+        self,
+        file_path: str,
+        source_code: str,
+        file_vulns: list[Vulnerability],
+        files_content: dict[str, str],
+    ) -> dict[str, str]:
+        """Regex-based fallback for related file resolution.
 
         Returns up to 3 related files within a ~30K char budget.
         """
@@ -1242,195 +1650,37 @@ class BaselineRunner:
         return location
 
     def analyze_file(
-        self, relative_path: str, content: str
+        self,
+        relative_path: str,
+        content: str,
+        prompt_name: str = "",
+        system_prompt: str = "",
     ) -> tuple[Vulnerabilities, int, int]:
         """Analyze a single file for security vulnerabilities.
+
+        Args:
+            relative_path: Path to the file relative to source dir
+            content: File content
+            prompt_name: Name of the audit prompt domain
+            system_prompt: Pre-built system prompt to use
 
         Returns:
             Tuple of (vulnerabilities, input_tokens, output_tokens)
         """
         file_path = Path(relative_path)
 
+        label = f" [{prompt_name}]" if prompt_name else ""
         console.print(
-            f"[dim]  → Analyzing {relative_path} ({len(content)} bytes)[/dim]"
+            f"[dim]  → Analyzing {relative_path}{label} "
+            f"({len(content)} bytes)[/dim]"
         )
 
-        parser = PydanticOutputParser(pydantic_object=Vulnerabilities)
-        format_instructions = parser.get_format_instructions()
-
-        system_prompt = dedent(f"""
-            You are an expert smart contract security auditor. Find EXPLOITABLE vulnerabilities with concrete attack paths.
-
-            ## CRITICAL: QUALITY OVER QUANTITY
-            Only report vulnerabilities where you can describe a specific, step-by-step exploit.
-            A good finding has: attacker action -> vulnerable code path -> concrete impact (fund loss, state corruption, DoS).
-            If you cannot describe the exploit steps, do NOT report it.
-
-            ## DESCRIPTION REQUIREMENTS (CRITICAL FOR MATCHING)
-            Each finding description MUST include these elements for proper detection:
-            1. **Filename**: Include the source filename (e.g., "In Vault.sol, the...")
-            2. **Function call pattern**: Reference functions as `functionName()` (e.g., "the withdraw() function")
-            3. **Core mechanism**: The specific flaw (e.g., "state updated after external call")
-            4. **Impact**: Concrete consequence (e.g., "allows attacker to drain all funds")
-            5. **Exploit path**: Brief step-by-step attack scenario
-
-            ## LOCATION FORMAT
-            Use: `ContractName.functionName` (e.g., `Vault.withdraw`)
-
-            ## VULNERABILITY TYPES (use exact names)
-            reentrancy, access-control, integer-overflow, flash-loan-attack,
-            front-running, denial-of-service, logic-error, oracle-manipulation,
-            precision-loss, unchecked-external-call, storage-collision
-
-            ## SEVERITY
-            - critical: Direct fund loss, no preconditions
-            - high: Fund loss with conditions, protocol disruption
-            - medium: Limited loss, multiple steps required
-            - low: Minor issues, theoretical only
-
-            ## CONFIDENCE (0.0-1.0)
-            - 0.9+: Definite vulnerability with clear exploit
-            - 0.8-0.9: High confidence, minor uncertainty
-            - 0.75-0.8: Confident but needs specific conditions
-            - Only report if confidence >= 0.75
-
-            ## HIGH-VALUE VULNERABILITY PATTERNS TO CHECK
-            Look carefully for these specific patterns:
-
-            1. **Reward/fee distribution rounding**: When dividing accumulated rewards by total shares,
-               check if rounding to zero causes permanent loss. If `deltaIndex = accrued / totalShares`
-               rounds to zero but `lastBalance` still advances, rewards are silently lost.
-               State variables (index and balance) must advance in lockstep or not at all.
-
-            2. **Missing slippage protection**: For any function that withdraws liquidity, burns
-               positions, or removes funds from pools, verify slippage parameters (min output amounts)
-               exist. Without them, MEV sandwich attacks can steal value. This applies to
-               `decreaseLiquidity`, `removeLiquidity`, `withdraw`, `update_position` with negative
-               deltas, etc.
-
-            3. **Incorrect formula after partial state changes**: When transferring, splitting, or
-               migrating positions (vesting, staking, etc.), check if recalculations use the
-               ORIGINAL totals instead of REMAINING amounts. E.g., `releaseRate = totalAmount / steps`
-               is wrong if some amount was already claimed; it should be
-               `(totalAmount - amountClaimed) / (steps - stepsClaimed)`.
-
-            4. **Unvalidated parameters for state-changing functions**: If a function performs
-               critical operations (swaps, rebalances, liquidations) with user-supplied parameters
-               that should come from a preview/calculation function, check if those parameters
-               are validated. Anyone calling with arbitrary values can disrupt protocol state.
-
-            5. **Incorrect swap direction / token ordering assumptions**: When interacting with
-               DEX pools (Uniswap V2/V3, etc.), verify the code queries actual token ordering
-               via `token0()`/`token1()` rather than assuming a fixed position based on identity.
-               Tokens are sorted lexicographically; hardcoded assumptions break when addresses
-               don't match expected ordering.
-
-            6. **Front-runnable deterministic deployments**: When using CREATE2, Clones.clone(),
-               or other deterministic deployment, check if subsequent operations (e.g., creating
-               a DEX pair) can be front-run by an attacker who predicts the address and performs
-               the operation first, causing a permanent DoS.
-
-            7. **Inconsistent refund logic**: In multi-step swap/transfer flows, trace the full
-               fund path: amount taken from user -> amount used -> refund. If the amount taken
-               already accounts for partial fills, an additional refund creates double-counting
-               and protocol loss.
-
-            8. **Public function abuse / allowance drain**: When a contract (like
-               a router or vault) holds ERC20 allowances from users, check if
-               any public function can be called by a third party to transfer
-               those approved tokens. Specifically: if users approve() the
-               contract, can an attacker call a function that triggers
-               transferFrom() with the user's address as `from`? Check
-               pullTokens, deposit-on-behalf, permit-based transfers.
-
-            9. **Fee avoidance via public harvest/sync**: If harvest(), sync(),
-               or update functions are public and reset accounting state
-               (balances, timestamps, deployed amounts), can a caller time
-               these calls to avoid performance fees or inflate their share
-               of rewards?
-
-            ## OMISSION BUGS — CHECK FOR MISSING CODE
-            These are bugs where the vulnerability is a MISSING line, not a wrong line:
-            1. **Return value unit mismatch**: Does the function return shares
-               when callers expect underlying assets, or vice versa? Check
-               _deploy(), _undeploy(), _getBalance() — do they return the
-               same unit (assets vs shares) consistently?
-            2. **Missing state update after mutation**: After withdraw/undeploy/
-               transfer, is the tracking variable (_deployedAmount, totalDebt,
-               etc.) updated to reflect the change? If not, downstream
-               calculations (fees, exchange rates) will be wrong.
-            3. **Missing validation on public entry points**: If a function is
-               public/external without access control, can an arbitrary caller
-               trigger unintended economic effects? (e.g., calling harvest()
-               to reset fee counters, or using router allowances to transfer
-               someone else's tokens)
-
-            ## EXAMPLE GOOD DESCRIPTION
-            "In Vault.sol, the withdraw() function updates the user balance after calling
-            an external contract via transfer(). An attacker can deploy a malicious contract
-            that re-enters withdraw() before the balance update, draining all ETH from the vault."
-
-            ## CRITICAL: AVOID DUPLICATES
-            Do NOT report multiple variations of the same underlying issue.
-            If a bug affects multiple functions, report it ONCE at the root cause location.
-            Report at most 3-4 findings per file. Only report findings you are highly confident about.
-
-            ## BEFORE REPORTING, VERIFY EACH FINDING
-            For every potential finding, ask yourself:
-            1. Did I trace the FULL execution path, including modifiers
-               and callers, not just one function in isolation?
-            2. Is the "vulnerable" parameter actually controlled by an
-               attacker, or only by the caller/admin?
-            3. Does a modifier, require(), or earlier check already
-               prevent the attack I am describing?
-            4. Am I flagging a DESIGN CHOICE (cooldown, conversion
-               rate, emergency function) as a bug?
-            5. Am I trusting a CODE COMMENT over the actual code?
-            If ANY answer disqualifies the finding, do NOT report it.
-
-            ## DO NOT REPORT (these are NOT vulnerabilities)
-            - Gas optimizations (unless causes actual DoS)
-            - Code style or naming issues
-            - Theoretical issues without a concrete exploit path
-            - Missing zero-address checks on constructor/initializer/admin parameters
-            - Missing input validation that has no security impact
-            - Centralization risks or admin trust assumptions (admin privileges are by design)
-            - Events not being emitted
-            - Reentrancy where the contract uses ReentrancyGuard or checks-effects-interactions correctly
-            - Issues in interface definitions (interfaces have no implementation)
-            - Known patterns from OpenZeppelin or other audited libraries
-            - Speculative overflow/underflow in Solidity >=0.8.0 (has built-in overflow checks)
-            - "Missing access control" on functions protected by modifiers (onlyOwner, onlyAdmin)
-            - Ownership renouncement or immutability patterns (these are intentional design choices)
-            - Error message text inconsistencies
-            - Issues requiring admin/owner compromise as a precondition
-            - Issues requiring miner/validator collusion or block manipulation
-            - Uninitialized state that is set during initialize() or constructor
-            - Generic MEV/front-running/sandwich on functions that do NOT
-              interact with AMMs, DEXes, or price oracles
-            - Slippage concerns where minOut/minAmount is a caller-controlled
-              parameter — the function provides the option, it is the
-              caller's responsibility to set a safe value
-            - Claims that code contradicts comments or NatSpec — comments
-              can be outdated; audit the CODE, not the comments
-            - Claims a boolean condition is inverted without a concrete
-              trace proving the correct behavior
-            - Memory vs storage confusion — only report if you can show
-              concrete state corruption
-            - "Uninitialized mapping/storage" claims — Solidity
-              zero-initializes all storage by default
-            - Front-running initialize()/init() of clone/proxy contracts
-              deployed via factories (factory calls init atomically)
-            - Cooldown mechanisms, time delays, conversion rate functions,
-              or emergency governance functions as vulnerabilities — these
-              are intentional protocol design patterns
-            - "Unchecked return value" for internal calls or SafeERC20
-              patterns in Solidity >=0.8
-
-            {format_instructions}
-
-            IMPORTANT: Output ONLY valid JSON. Begin with `{{"vulnerabilities":`
-        """)
+        if not system_prompt:
+            parser = PydanticOutputParser(pydantic_object=Vulnerabilities)
+            format_instructions = parser.get_format_instructions()
+            system_prompt = _build_audit_prompt(
+                AUDIT_DOMAIN_1_CORE_SAFETY, format_instructions
+            )
 
         # Extract just the filename for clearer reference
         filename = file_path.name
@@ -1488,7 +1738,6 @@ class BaselineRunner:
 
     def process_file(self, file_path, source_dir):
         relative_path = str(file_path.relative_to(source_dir))
-        num_runs = 2
 
         try:
             with open(file_path, "r", encoding="utf-8") as f:
@@ -1497,25 +1746,30 @@ class BaselineRunner:
             if not content.strip():
                 return "skipped", None
 
-            runs = []
+            parser = PydanticOutputParser(pydantic_object=Vulnerabilities)
+            format_instructions = parser.get_format_instructions()
+
+            all_findings = []
             total_input_tokens = 0
             total_output_tokens = 0
 
-            for run_idx in range(num_runs):
-                if run_idx > 0:
-                    console.print(
-                        f"[dim]  → Run {run_idx + 1}/{num_runs} "
-                        f"for {relative_path}[/dim]"
-                    )
-                vulns, in_tok, out_tok = self.analyze_file(
-                    relative_path, content
+            for prompt_name, domain_section in AUDIT_PROMPTS:
+                sys_prompt = _build_audit_prompt(
+                    domain_section, format_instructions
                 )
-                runs.append(vulns.vulnerabilities)
+                vulns, in_tok, out_tok = self.analyze_file(
+                    relative_path,
+                    content,
+                    prompt_name=prompt_name,
+                    system_prompt=sys_prompt,
+                )
+                all_findings.extend(vulns.vulnerabilities)
                 total_input_tokens += in_tok
                 total_output_tokens += out_tok
 
-            # Apply consensus filter across runs
-            confirmed = self.consensus_filter(runs, min_appearances=2)
+            # Deduplicate by ID across prompts
+            unique = {v.id: v for v in all_findings}
+            confirmed = list(unique.values())
 
             return "ok", (
                 confirmed,
@@ -1612,6 +1866,39 @@ class BaselineRunner:
                 continue
             filtered.append(f)
         files = filtered
+
+        # Respect project-level out_of_scope.txt
+        scope_file = source_dir / "out_of_scope.txt"
+        if scope_file.exists():
+            try:
+                scope_lines = scope_file.read_text().strip().splitlines()
+                out_of_scope = set()
+                for line in scope_lines:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    out_of_scope.add(line)
+
+                if out_of_scope:
+                    before = len(files)
+                    files = [
+                        f
+                        for f in files
+                        if not any(
+                            str(f.relative_to(source_dir)).startswith(oos)
+                            or f.name == oos
+                            for oos in out_of_scope
+                        )
+                    ]
+                    excluded = before - len(files)
+                    if excluded > 0:
+                        console.print(
+                            f"[dim]  Excluded {excluded} "
+                            f"files via "
+                            f"out_of_scope.txt[/dim]"
+                        )
+            except Exception:
+                pass
 
         if not files:
             console.print("[yellow]No files found to analyze[/yellow]")

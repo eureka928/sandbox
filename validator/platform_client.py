@@ -2,7 +2,6 @@ import base64
 import json
 import secrets
 import time
-from datetime import datetime, timedelta
 from typing import Any, Literal
 
 import requests
@@ -62,8 +61,8 @@ class APIPlatformClient:
         self.hotkey = wallet.hotkey
 
     def _create_wallet_token(self, hotkey: str, expiry_minutes: int = 1) -> str:
-        iat = int(datetime.utcnow().timestamp())
-        exp = int((datetime.utcnow() + timedelta(minutes=expiry_minutes)).timestamp())
+        iat = int(time.time())
+        exp = iat + (expiry_minutes * 60)
         payload = {
             "address": self.hotkey.ss58_address,
             "nonce": secrets.token_hex(16),

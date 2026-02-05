@@ -63,7 +63,7 @@ class AgentExecutor:
         """
         try:
             self.logger.info(f"Pulling latest image: {image_tag}")
-            docker.pull(image_tag)
+            docker.pull(image_tag, quiet=True)
             self.logger.info(f"Image {image_tag} is up-to-date")
         except DockerException as e:
             self.logger.warning(

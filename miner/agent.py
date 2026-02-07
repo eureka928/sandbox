@@ -48,6 +48,7 @@ class Vulnerability(BaseModel):
     confidence: float
     location: str
     file: str
+    attack_trace: list[str] = []
     id: str | None = None
     reported_by_model: str = ""
     status: str = "proposed"
@@ -178,11 +179,24 @@ precision-loss, unchecked-external-call, storage-collision
 - 0.75-0.8: Confident but needs specific conditions
 - Only report if confidence >= 0.75
 
+## ATTACK TRACE (REQUIRED)
+Each finding MUST include an `attack_trace` field: a JSON array \
+of 2-4 concrete steps showing how an attacker exploits the flaw.
+Example:
+"attack_trace": [
+  "Step 1: Attacker calls deposit() with 1 wei to become first depositor",
+  "Step 2: Attacker donates 1e18 tokens directly to inflate share price",
+  "Step 3: Victim deposits 1.5e18 tokens but receives 0 shares due to rounding",
+  "Step 4: Attacker withdraws, stealing victim funds"
+]
+Each step must reference a specific function or action. \
+If you cannot write concrete steps, do NOT report the finding.
+
 ## CRITICAL: AVOID DUPLICATES
 Do NOT report multiple variations of the same underlying issue.
 If a bug affects multiple functions, report it ONCE at the root \
 cause location.
-Report at most 2-3 findings for this prompt domain.
+Report at most 3-4 findings per file.
 
 ## BEFORE REPORTING, VERIFY EACH FINDING
 For every potential finding, ask yourself:
@@ -197,6 +211,116 @@ For every potential finding, ask yourself:
 5. Am I trusting a CODE COMMENT over the actual code?
 If ANY answer disqualifies the finding, do NOT report it.
 """
+
+APPROACH_A_LOGIC_FUNDS = """\
+## HIGH-VALUE PATTERNS — Logic & Fund Flows
+Focus on financial logic, reward math, and state accounting:
+
+1. **Reward/fee distribution rounding**: When dividing \
+accumulated rewards by total shares, check if rounding to \
+zero causes permanent loss. If `deltaIndex = accrued / \
+totalShares` rounds to zero but `lastBalance` still advances, \
+rewards are silently lost. Index and balance must advance \
+in lockstep or not at all.
+2. **Incorrect formula after partial state changes**: When \
+transferring, splitting, or migrating positions (vesting, \
+staking, etc.), check if recalculations use ORIGINAL totals \
+instead of REMAINING amounts. E.g., `releaseRate = \
+totalAmount / steps` is wrong if some amount was already \
+claimed; should be `(totalAmount - amountClaimed) / \
+(steps - stepsClaimed)`.
+3. **Share dilution / first-depositor inflation**: Can the \
+first depositor manipulate the exchange rate by depositing \
+1 wei then donating a large amount, causing subsequent \
+depositors to receive 0 shares? Check for minimum deposit \
+or virtual offset.
+4. **Profit vs loss accounting errors**: When calculating \
+PnL across contracts, verify credits and debits sum \
+correctly. Check sign handling (positive vs negative) and \
+whether profit/loss paths are handled symmetrically.
+5. **Fee avoidance via public harvest/sync**: If harvest(), \
+sync(), or update functions are public and reset accounting \
+state, can a caller time these calls to avoid performance \
+fees or inflate their share of rewards?
+6. **Precision loss in intermediate calculations**: Check \
+for multiply-before-divide patterns. Division followed by \
+multiplication loses precision; the reverse preserves it.
+7. **Liquidation threshold errors**: Is the liquidation \
+condition checking the right ratio? Can healthy positions \
+be liquidated or unhealthy ones escape? Can a user \
+self-liquidate to extract the liquidation bonus?
+8. **Inconsistent refund logic**: In multi-step swap/transfer \
+flows, trace: amount taken -> amount used -> refund. If the \
+taken amount already accounts for partial fills, an \
+additional refund double-counts and drains the protocol.
+
+## OMISSION BUGS — Logic & Fund Flows
+1. **Return value unit mismatch**: Does the function return \
+shares when callers expect underlying assets, or vice versa?
+2. **Missing state update after mutation**: After withdraw/ \
+undeploy/transfer, is the tracking variable updated?
+3. **Missing accrual before claim**: Are pending rewards \
+accrued before allowing a claim?
+4. **Missing index update before share change**: When \
+minting or burning shares, is the reward index updated \
+first?
+"""
+
+APPROACH_B_ACCESS_SAFETY = """\
+## HIGH-VALUE PATTERNS — Access Control & Safety
+Focus on access control, reentrancy, and external interactions:
+
+1. **Reentrancy**: State updated AFTER external calls \
+(transfers, low-level calls) without ReentrancyGuard or \
+checks-effects-interactions pattern.
+2. **Access control gaps on critical functions**: Public/ \
+external functions that modify critical state without \
+onlyOwner/onlyRole/auth modifiers. Trace internal helpers \
+to their external callers.
+3. **Privileged role abuse (coordinator/operator/keeper)**: \
+Check if roles can set parameters enabling theft (100% fees, \
+manipulated price bounds, forced liquidations). Look for \
+updateParameter(), setFee(), updateRiskParameter().
+4. **Missing access control on privilege-granting functions**: \
+Functions like updateExtension(), setOperator(), \
+registerExtension() that grant protocol-wide privileges \
+MUST have access control.
+5. **Public function abuse / allowance drain**: When a \
+contract holds ERC20 allowances from users, check if any \
+public function lets a third party trigger transferFrom() \
+with another user's address as `from`.
+6. **Missing slippage protection**: Any function that removes \
+liquidity, burns positions, or calls update_position() with \
+negative delta MUST have minimum output amount parameters. \
+Without them, MEV sandwich attacks extract value.
+7. **Front-runnable deterministic deployments**: Factory \
+contracts using CREATE2 or Clones.clone() produce predictable \
+addresses. If subsequent calls depend on that address, an \
+attacker can front-run and DoS the factory.
+8. **Wrong token ordering assumptions**: DEX interactions \
+that assume a token is always token0 or token1 instead of \
+querying pool.token0(). Tokens are sorted lexicographically; \
+hardcoded assumptions produce wrong swap directions.
+9. **Unvalidated critical parameters**: Functions performing \
+swaps, rebalances, or liquidations with user-supplied \
+parameters that have a specific valid range but no validation.
+
+## OMISSION BUGS — Access Control & Safety
+1. **Missing access control on destructive functions**: \
+selfdestruct, delegatecall targets, or upgrade functions \
+without auth modifiers.
+2. **Missing validation on public entry points**: If a \
+function is public/external without access control, can an \
+arbitrary caller trigger unintended economic effects?
+3. **Missing state update after external interaction**: After \
+a token transfer or external call succeeds, is the tracking \
+variable updated?
+"""
+
+AUDIT_APPROACHES = [
+    ("logic_funds", APPROACH_A_LOGIC_FUNDS),
+    ("access_safety", APPROACH_B_ACCESS_SAFETY),
+]
 
 
 def _build_audit_prompt(domain_section: str, format_instructions: str) -> str:
@@ -218,195 +342,6 @@ def _build_audit_prompt(domain_section: str, format_instructions: str) -> str:
         + "IMPORTANT: Output ONLY valid JSON. Begin with "
         + '`{"vulnerabilities":`'
     )
-
-
-AUDIT_DOMAIN_1_CORE_SAFETY = """\
-## HIGH-VALUE PATTERNS — Core Safety
-Focus on fundamental smart contract safety issues:
-
-1. **Reentrancy**: State updated AFTER external calls \
-(transfers, low-level calls). Check if ReentrancyGuard or \
-checks-effects-interactions is missing.
-2. **Access control gaps**: Public/external functions that \
-modify critical state without onlyOwner/onlyRole/auth \
-modifiers. Trace internal helpers to their external callers.
-3. **Integer overflow in Solidity <0.8**: Unchecked math in \
-contracts using older pragma. In >=0.8, only flag unchecked{} \
-blocks with actual overflow risk.
-4. **Unchecked external calls**: Low-level call/delegatecall \
-where return value is not checked, leading to silent failures \
-that corrupt state.
-5. **Storage collision**: Proxy/upgrade patterns where storage \
-layouts conflict between implementation versions.
-
-## OMISSION BUGS — Core Safety
-1. **Missing state update after external interaction**: After \
-a token transfer or external call succeeds, is the tracking \
-variable updated? If not, replay or double-spend is possible.
-2. **Missing access control on destructive functions**: \
-selfdestruct, delegatecall targets, or upgrade functions \
-without auth modifiers.
-"""
-
-AUDIT_DOMAIN_2_VESTING_CLAIMS = """\
-## HIGH-VALUE PATTERNS — Vesting & Claims
-Focus on token vesting, release schedules, and claiming logic:
-
-1. **Incorrect formula after partial claim**: When \
-transferring or splitting vesting positions, check if \
-recalculations use ORIGINAL totals instead of REMAINING \
-amounts. E.g., `releaseRate = totalAmount / steps` is wrong \
-if some amount was already claimed; should be \
-`(totalAmount - amountClaimed) / (steps - stepsClaimed)`.
-2. **Claim amount exceeds available**: Can a beneficiary \
-claim more tokens than they are entitled to? Check the \
-calculation of claimable amount vs total allocation.
-3. **Transfer-after-partial-claim errors**: When a vesting \
-position is transferred, does the new owner inherit the \
-correct remaining amount, or can they re-claim already-\
-claimed tokens?
-4. **Cliff/step boundary off-by-one**: Check if vesting \
-cliff or step calculations have off-by-one errors allowing \
-early or late claims.
-
-## OMISSION BUGS — Vesting & Claims
-1. **Missing amountClaimed update**: After a successful \
-claim, is the claimed amount properly tracked?
-2. **Missing revocation of unvested tokens**: In revocable \
-vesting, are unvested tokens properly returned?
-"""
-
-AUDIT_DOMAIN_3_REWARD_DISTRIBUTION = """\
-## HIGH-VALUE PATTERNS — Reward Distribution
-Focus on fee/reward math, distribution indexes, and share \
-accounting:
-
-1. **Rounding-induced reward loss**: When distributing \
-rewards, if `deltaIndex = accrued / totalShares` rounds to \
-zero but `lastBalance` is still advanced, those rewards are \
-permanently lost. Index and balance must advance together \
-or not at all.
-2. **Share dilution attacks**: Can an early depositor with \
-1 wei of shares manipulate the reward index to steal from \
-later depositors?
-3. **Fee avoidance via public harvest/sync**: If harvest(), \
-sync(), or update functions are public and reset accounting \
-state, can a caller time these calls to avoid performance \
-fees or inflate their share of rewards?
-4. **Incorrect fee-on-transfer handling**: Does the contract \
-account for tokens that take a fee on transfer, or does it \
-assume received == sent?
-
-## OMISSION BUGS — Reward Distribution
-1. **Missing index update before share change**: When \
-minting or burning shares, is the reward index updated \
-first? If not, the new/removed shares earn/lose rewards \
-they shouldn't.
-2. **Missing accrual before claim**: Are pending rewards \
-accrued before allowing a claim?
-"""
-
-AUDIT_DOMAIN_4_LIQUIDATION_PNL = """\
-## HIGH-VALUE PATTERNS — Liquidation & PnL
-Focus on liquidation thresholds, profit/loss accounting, \
-and collateral handling:
-
-1. **Incorrect liquidation threshold**: Is the liquidation \
-condition checking the right ratio? Can healthy positions \
-be liquidated or unhealthy ones escape liquidation?
-2. **Profit vs loss accounting errors**: When calculating \
-PnL across contracts, verify credits and debits sum \
-correctly. Check sign handling (positive vs negative).
-3. **Collateral not released after liquidation**: After a \
-position is liquidated, is remaining collateral returned \
-to the user?
-4. **Liquidation bonus overflow**: Can the liquidation \
-bonus exceed the available collateral, causing underflow?
-5. **Self-liquidation for profit**: Can a user liquidate \
-their own position to extract the liquidation bonus?
-
-## OMISSION BUGS — Liquidation & PnL
-1. **Missing bad debt handling**: When liquidation doesn't \
-cover the debt, is the shortfall socialized or does it \
-corrupt protocol accounting?
-2. **Missing position deletion after full liquidation**: \
-Is the position struct cleaned up, or can it be \
-re-liquidated?
-"""
-
-AUDIT_DOMAIN_5_DEPOSIT_MINTING = """\
-## HIGH-VALUE PATTERNS — Deposit & Minting
-Focus on deposit/withdraw flows, share minting/burning, \
-and exchange rate manipulation:
-
-1. **First-depositor / inflation attack**: Can the first \
-depositor manipulate the exchange rate by depositing 1 wei \
-then donating a large amount, causing subsequent depositors \
-to receive 0 shares? Check if there's a minimum deposit \
-or virtual offset.
-2. **Exchange rate manipulation via direct transfer**: Can \
-sending tokens directly to the vault inflate the share \
-price, causing rounding theft?
-3. **Withdraw more than deposited**: Does the withdraw \
-path correctly calculate the user's entitlement based on \
-shares, not on deposit amount?
-4. **Deposit/withdraw reentrancy**: In deposit() or \
-withdraw(), is state updated before the external token \
-transfer?
-
-## OMISSION BUGS — Deposit & Minting
-1. **Return value unit mismatch**: Does the function \
-return shares when callers expect underlying assets, or \
-vice versa? Check _deploy(), _undeploy(), _getBalance() \
-for consistency.
-2. **Missing _deployedAmount update**: After undeploy or \
-withdraw, is the tracking variable updated?
-3. **Missing totalSupply check**: Can withdraw/redeem \
-proceed when totalSupply is zero, causing division by zero?
-"""
-
-AUDIT_DOMAIN_6_INTERFACE_COMPAT = """\
-## HIGH-VALUE PATTERNS — Interface Compatibility
-Focus on ERC standards compliance, callback handling, and \
-token interaction patterns:
-
-1. **Wrong token ordering assumptions**: When interacting \
-with DEX pools (Uniswap V2/V3), verify the code queries \
-actual token ordering via `token0()`/`token1()` rather \
-than assuming a fixed position. Tokens are sorted \
-lexicographically; hardcoded assumptions break.
-2. **Missing ERC20 approval reset**: Some tokens (USDT) \
-require approval to be set to 0 before setting a new \
-value. Check if the contract handles this.
-3. **Callback reentrancy via ERC721/ERC1155**: \
-safeTransferFrom triggers onERC721Received/onERC1155\
-Received callbacks. Is state updated before the transfer?
-4. **Front-runnable deterministic deployments**: Factory \
-contracts using CREATE2 produce predictable addresses. If \
-subsequent calls (e.g., `createPair()`) depend on that \
-address, an attacker can front-run and DoS the factory.
-5. **Public function abuse / allowance drain**: When a \
-contract holds ERC20 allowances from users, check if any \
-public function lets a third party trigger transferFrom() \
-with another user's address as `from`.
-
-## OMISSION BUGS — Interface Compatibility
-1. **Missing approval before transferFrom**: Does the \
-contract approve tokens before calling transferFrom on \
-behalf of users?
-2. **Missing callback support**: If the contract should \
-accept ERC721/ERC1155 tokens, does it implement the \
-required receiver interfaces?
-"""
-
-AUDIT_PROMPTS = [
-    ("core_safety", AUDIT_DOMAIN_1_CORE_SAFETY),
-    ("vesting_claims", AUDIT_DOMAIN_2_VESTING_CLAIMS),
-    ("reward_distribution", AUDIT_DOMAIN_3_REWARD_DISTRIBUTION),
-    ("liquidation_pnl", AUDIT_DOMAIN_4_LIQUIDATION_PNL),
-    ("deposit_minting", AUDIT_DOMAIN_5_DEPOSIT_MINTING),
-    ("interface_compat", AUDIT_DOMAIN_6_INTERFACE_COMPAT),
-]
 
 
 class BaselineRunner:
@@ -550,12 +485,27 @@ class BaselineRunner:
             ### Fund Flow Errors
             9. **Inconsistent refund logic**: In swap functions, trace: amount taken from user -> amount actually swapped -> refund. If the taken amount already equals the swap amount (adjusted for liquidity), an additional refund is double-counting and drains the protocol.
 
+            ### Privileged Role Abuse (CRITICAL)
+            10. **Coordinator/operator excessive power**: Check if roles like coordinator, operator, keeper, or market can set parameters that enable theft (100% fees, manipulated price bounds, forced liquidations). The role may be "trusted" but if they can steal ALL funds, it's a vulnerability.
+            11. **Missing access control on privilege-granting functions**: Functions like updateExtension(), setOperator(), registerExtension() that grant protocol-wide privileges must have access control. If anyone can call them, anyone can become an operator.
+
+            ### Protocol Integration Issues
+            12. **AMO/DEX integration mismatch**: When AMO contracts integrate with DEXes (Aerodrome, Velodrome, UniV3), verify the liquidity math matches the specific DEX. Different DEX versions have different formulas.
+            13. **Validator/delegator reward bypass**: In staking systems, check if validators can claim rewards that should go to delegators, or if slashing can be circumvented.
+
             ## DESCRIPTION REQUIREMENTS
             Each finding MUST include:
             1. **All files/contracts involved** (e.g., "In StepVesting.sol and VestingManager.sol...")
             2. **The specific functions** using `functionName()` notation
             3. **Step-by-step exploit scenario** with concrete attacker actions
             4. **Concrete impact** (fund loss, permanent DoS, state corruption)
+
+            ## ATTACK TRACE (REQUIRED)
+            Each finding MUST include an `attack_trace` field: a JSON \
+array of 2-4 concrete steps.
+            Example: "attack_trace": ["Step 1: Attacker calls X()", \
+"Step 2: State Y changes", "Step 3: Attacker profits"]
+            Each step must reference a specific function or action.
 
             ## SEVERITY
             - critical: Direct fund loss, no preconditions
@@ -934,6 +884,254 @@ class BaselineRunner:
         ):
             return True
 
+        # Oracle staleness / heartbeat without concrete duration
+        # These are often generic warnings without proof of impact
+        if re.search(
+            r"(oracle|chainlink|price\s*feed).*(stale|staleness"
+            r"|heartbeat|outdated|old\s+price)",
+            combined,
+        ):
+            # Only filter if no concrete time duration mentioned
+            if not re.search(
+                r"\d+\s*(second|minute|hour|day|block)", combined
+            ):
+                return True
+
+        # Token ordering assumptions without concrete swap impact
+        # Generic "token0/token1 ordering" without demonstrating
+        # actual wrong swap direction
+        if re.search(
+            r"(token\s*ordering|token0.*token1|incorrect.*ordering"
+            r"|wrong.*token.*order)",
+            combined,
+        ):
+            # Keep if there's a concrete swap direction issue
+            if not re.search(
+                r"(swap.*wrong.*direction|reversed.*swap"
+                r"|buy.*instead.*sell|sell.*instead.*buy)",
+                combined,
+            ):
+                return True
+
+        # Predictable / deterministic IDs without exploit path
+        if re.search(
+            r"(predictable|deterministic)\s*(order\s*)?(id|identifier)",
+            combined,
+        ):
+            # Keep if there's actual front-running/collision exploit
+            if not re.search(
+                r"(front.?run|collision|overwrite|hijack|steal)",
+                combined,
+            ):
+                return True
+
+        # Generic "incorrect" findings without attacker/exploit
+        if re.search(
+            r"incorrect\s+(state|calculation|update|handling"
+            r"|validation|conversion|price)",
+            combined,
+        ):
+            # Only filter if no exploit path mentioned
+            if not re.search(
+                r"(attacker|exploit|steal|drain|manipulat|arbitrage"
+                r"|profit|loss\s+of\s+fund|fund\s+loss)",
+                combined,
+            ):
+                return True
+
+        # Missing validation on view/getter functions
+        if re.search(r"missing\s+(input\s+)?validation", combined):
+            if re.search(r"(view|pure|getter|read.?only)", combined):
+                return True
+
+        # Circuit breaker / emergency function as vulnerability
+        if re.search(
+            r"(circuit\s*breaker|emergency|pause|unpause)",
+            combined,
+        ):
+            if re.search(r"(can\s+be\s+called|missing\s+access)", combined):
+                if re.search(
+                    r"(only.?owner|only.?admin|authorized)", combined
+                ):
+                    return True
+
+        # Event emission order / missing events — low impact
+        if re.search(
+            r"(missing|incorrect|wrong)\s+event\s+(emission|emit)",
+            combined,
+        ) or re.search(r"event.*(not\s+emitted|order|sequence)", combined):
+            return True
+
+        # Gas optimization / inefficiency reports
+        if re.search(
+            r"(gas\s+inefficien|gas\s+optimiz|redundant\s+storage"
+            r"|unnecessary\s+(sload|sstore|call))",
+            combined,
+        ):
+            return True
+
+        # Self-transfer / self-approval patterns (often intentional)
+        if re.search(
+            r"(self.?transfer|transfer.*to.*itself"
+            r"|approve.*self|self.?approval)",
+            combined,
+        ):
+            if not re.search(r"(infinite|loop|drain|steal)", combined):
+                return True
+
+        # Return value not checked for internal/known-safe calls
+        if re.search(r"(return\s+value|returndata)\s+not\s+checked", combined):
+            if re.search(
+                r"(internal|private|trusted|known|safe)",
+                combined,
+            ):
+                return True
+
+        # Reentrancy on view/pure/read-only or non-state-changing
+        if re.search(r"reentr", combined):
+            if re.search(
+                r"(view|pure|read.?only|no\s+state\s+change"
+                r"|external\s+view|constant)",
+                combined,
+            ):
+                return True
+
+        # "Anyone can call" on public utility functions
+        # (execute, fill, liquidate, etc. are designed to be public)
+        if re.search(r"anyone\s+can\s+call", combined):
+            if re.search(
+                r"(execute|fill.?order|liquidat|settle|claim.?reward"
+                r"|compound|harvest|poke|sync|update.?price)",
+                combined,
+            ):
+                return True
+
+        # Lack of two-step ownership transfer — low impact design
+        if re.search(
+            r"(two.?step|2.?step)\s+(ownership|admin)\s+transfer",
+            combined,
+        ) or re.search(r"ownership\s+transfer\s+in\s+one\s+step", combined):
+            return True
+
+        # DoS by external call failure on non-critical paths
+        if re.search(r"(dos|denial\s+of\s+service)", combined):
+            if re.search(
+                r"(callback|hook|notification|event|log)",
+                combined,
+            ):
+                if not re.search(
+                    r"(fund|withdraw|transfer|critical|core)",
+                    combined,
+                ):
+                    return True
+
+        # Signature replay across chains — often has chainId
+        if re.search(r"signature\s+replay", combined):
+            if re.search(
+                r"(chainid|chain.?id|domain.?separator)",
+                combined,
+            ):
+                return True
+
+        # Missing access control on non-critical/utility functions
+        if re.search(r"missing\s+access\s+control", combined):
+            if re.search(
+                r"(view|pure|getter|query|check|verify|validate"
+                r"|compute|calculate"
+                r"|execute|fill|liquidat|settle|claim|harvest"
+                r"|compound|sync|update|notify|callback|hook"
+                r"|receive|fallback|permit|multicall)",
+                combined,
+            ):
+                return True
+
+        # Privileged role can do privileged action (tautology)
+        if re.search(
+            r"(owner|admin|operator|governance)\s+(can|could|may)\s+"
+            r"(call|invoke|execute|trigger)",
+            combined,
+        ):
+            if not re.search(
+                r"(steal|drain|rug|manipulat|exploit|bypass)",
+                combined,
+            ):
+                return True
+
+        # Potential DoS on arrays without size proof
+        if re.search(r"(dos|denial).*(array|loop|iteration)", combined):
+            if not re.search(r"\d+\s*(element|item|iteration)", combined):
+                return True
+
+        # ERC20 approve race condition (well-known, not high sev)
+        if re.search(
+            r"(approve|allowance)\s+(race|front.?run)",
+            combined,
+        ):
+            return True
+
+        # Hardcoded address/value without impact
+        if re.search(r"hardcoded\s+(address|value|constant)", combined):
+            if not re.search(
+                r"(exploit|attack|steal|drain|manipulat)",
+                combined,
+            ):
+                return True
+
+        # "Incorrect X calculation" without concrete exploit path
+        if re.search(
+            r"incorrect\s+(fee|balance|share|reward|token|amount)"
+            r"\s+(calculation|update|check)",
+            combined,
+        ):
+            if not re.search(
+                r"(steal|drain|theft|profit|arbitrage|manipulat"
+                r"|attacker\s+(can|could|gains?|receives?))",
+                combined,
+            ):
+                return True
+
+        # Generic slippage on non-swap context
+        if re.search(r"(missing|no)\s+slippage", combined):
+            if not re.search(
+                r"(swap|exchange|amm|uniswap|curve|dex|router"
+                r"|liquidity\s+add|liquidity\s+remove)",
+                combined,
+            ):
+                return True
+
+        # ERC721/ERC1155 receiver callback issues (standard pattern)
+        if re.search(
+            r"(erc721|erc1155|nft)\s+(receiver|callback)",
+            combined,
+        ):
+            if not re.search(r"(reentran|steal|drain)", combined):
+                return True
+
+        # Emergency/upgrade function access (design choice)
+        if re.search(
+            r"(emergency|upgrade|migration)\s+(function|access)",
+            combined,
+        ):
+            if re.search(r"(owner|admin|governance)", combined):
+                return True
+
+        # Unchecked return in safe contexts
+        if re.search(r"unchecked\s+(return|call|result)", combined):
+            if re.search(
+                r"(safe.?transfer|safe.?call|try.?catch"
+                r"|internal|trusted|known)",
+                combined,
+            ):
+                return True
+
+        # Token ordering without swap direction proof
+        if re.search(r"token\s*ordering", combined):
+            if not re.search(
+                r"(swap.*wrong|reverse.*direction|loss\s+of)",
+                combined,
+            ):
+                return True
+
         return False
 
     def consensus_filter(
@@ -1058,83 +1256,7 @@ class BaselineRunner:
         file_vulns: list[Vulnerability],
         files_content: dict[str, str],
     ) -> dict[str, str]:
-        """Use LLM to select related files for context.
-
-        Returns up to 3 related files within a ~30K char budget.
-        """
-        MAX_RELATED_CHARS = 30_000
-        MAX_RELATED_FILES = 3
-
-        # Build list of available files (exclude current)
-        available = [p for p in files_content if p != file_path]
-        if not available:
-            return {}
-
-        # Ask LLM which files are most relevant
-        file_list = "\n".join(f"- {p}" for p in available)
-        findings_summary = "\n".join(
-            f"- {v.title} ({v.vulnerability_type})" for v in file_vulns
-        )
-
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You select related source files for "
-                    "security audit context. Output ONLY a "
-                    "JSON array of file paths."
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"File being audited: {file_path}\n\n"
-                    f"Findings to verify:\n"
-                    f"{findings_summary}\n\n"
-                    f"Available files:\n{file_list}\n\n"
-                    f"Select up to {MAX_RELATED_FILES} files "
-                    f"most relevant for verifying these "
-                    f"findings (parent contracts, imported "
-                    f"dependencies, contracts that interact "
-                    f"with this one). Output JSON array of "
-                    f"paths."
-                ),
-            },
-        ]
-
-        try:
-            response = self.inference(messages=messages)
-            content = response["content"].strip()
-            selected_paths = json.loads(
-                self.clean_json_response(content)
-                if not content.startswith("[")
-                else content
-            )
-        except Exception:
-            # Fallback to regex-based resolution
-            return self._resolve_related_files_regex(
-                file_path, source_code, file_vulns, files_content
-            )
-
-        # Collect within budget
-        result = {}
-        total_chars = 0
-        for p in selected_paths:
-            if p in files_content and p != file_path:
-                file_content = files_content[p]
-                if total_chars + len(file_content) <= MAX_RELATED_CHARS:
-                    result[p] = file_content
-                    total_chars += len(file_content)
-        return result
-
-    def _resolve_related_files_regex(
-        self,
-        file_path: str,
-        source_code: str,
-        file_vulns: list[Vulnerability],
-        files_content: dict[str, str],
-    ) -> dict[str, str]:
-        """Regex-based fallback for related file resolution.
+        """Resolve imported and referenced files for context.
 
         Returns up to 3 related files within a ~30K char budget.
         """
@@ -1205,6 +1327,12 @@ class BaselineRunner:
         # Build findings summary for the prompt
         findings_text = ""
         for i, v in enumerate(vulnerabilities):
+            trace_text = ""
+            if v.attack_trace:
+                steps = "\n".join(
+                    f"  {j}. {s}" for j, s in enumerate(v.attack_trace, 1)
+                )
+                trace_text = f"- **Attack Trace**:\n{steps}\n"
             findings_text += (
                 f"\n### Finding {i + 1}\n"
                 f"- **ID**: {v.id}\n"
@@ -1214,137 +1342,76 @@ class BaselineRunner:
                 f"- **Confidence**: {v.confidence}\n"
                 f"- **Location**: {v.location}\n"
                 f"- **Description**: {v.description}\n"
+                f"{trace_text}"
             )
 
         system_prompt = dedent("""
-            You are an adversarial smart contract security
-            reviewer. Your job is to separate real
-            vulnerabilities from false positives.
+            You are verifying smart contract security findings.
+            Your goal is to KEEP valid findings and only reject
+            clear false positives.
 
-            ## VERIFICATION METHOD — follow these steps:
-            1. Find the function/code mentioned in the
-               finding in the source. If the function or
-               pattern does not exist, REJECT.
-            2. Check if the function has access control
-               modifiers ON THE FUNCTION ITSELF (onlyOwner,
-               onlyAdmin, onlyRole, auth, etc.). Do NOT
-               assume access control exists — verify it by
-               reading the function signature.
-            3. If the finding describes a multi-step attack,
-               trace the full execution path: external
-               entry point -> internal calls -> state changes.
-               An internal function is reachable if any
-               external/public function calls it.
-            4. Verify the described impact against the actual
-               code. If the finding claims "fund loss" or
-               "fee avoidance", check whether the state
-               change actually affects balances or fees.
+            ## VERIFICATION METHOD
+            1. Find the function/code mentioned in the finding.
+               If no matching code exists, REJECT.
+            2. Check if the finding's claim is supported by
+               the actual code behavior.
+            3. When uncertain, KEEP the finding — false
+               negatives are worse than false positives.
 
-            ## AUTOMATIC REJECT — discard immediately if:
-            1. The described code pattern does NOT exist in
-               the source file
-            2. The function ITSELF has access control
-               modifiers (onlyOwner, onlyAdmin,
-               creditManagerOnly, onlyRole, auth, etc.)
-               AND the finding claims "anyone can call" —
-               but ONLY reject if the modifier is directly
-               on that function, not assumed from context
-            3. The finding mentions missing slippage /
-               price-manipulation protection but no swap,
-               AMM, or price oracle interaction exists in
-               the code
-            4. The finding claims reentrancy risk but the
-               code uses ReentrancyGuard, nonReentrant, or
-               follows checks-effects-interactions (state
-               updated before external call)
-            5. The finding targets a pure interface (no
-               implementation). But DO NOT reject findings
-               on abstract or base contracts if they have
-               implemented functions with real logic
-            6. The finding is about admin/owner trust
-               assumptions (e.g., "owner could rug") —
-               these are design choices, not vulnerabilities
-            7. The description uses vague language like
-               "could potentially", "might allow", or
-               "may lead to" WITHOUT a concrete exploit
-               sequence
-            8. The described function or contract name does
-               not appear in the source code
-            9. The vulnerability is in dead code or
-               unreachable paths
-            10. The finding claims slippage/MEV risk but the
-                function does not perform a swap, liquidity
-                operation, or interact with a price-dependent
-                external protocol
-            11. The finding cites a comment, NatSpec, or
-                documentation mismatch as evidence the code
-                is wrong — only code behavior matters
-            12. The finding claims a boolean/comparison is
-                inverted but does not trace the correct
-                expected behavior
-            13. The finding claims "uninitialized" storage or
-                mapping — Solidity zero-initializes all storage
-            14. The finding flags a cooldown, time delay, or
-                emergency governance function as a vulnerability
-            15. The finding claims a function can be front-run
-                but it is called atomically by a factory or
-                within a batch transaction
-            16. The finding claims a math formula is wrong
-                (e.g., missing division, overflow) but you
-                can verify the formula IS correct by reading
-                the actual code
-            17. The finding targets a mock or test contract
-                (file/contract name contains Mock, Test, or
-                is in a test directory)
+            ## ONLY REJECT IF (clear false positives):
+            1. The described function/pattern does NOT exist
+               in the source file at all
+            2. The finding claims "anyone can call" but the
+               function has a direct access modifier like
+               onlyOwner, onlyAdmin, onlyRole on it
+            3. The finding claims reentrancy but the code
+               uses ReentrancyGuard or nonReentrant modifier
+            4. The finding targets a pure interface file
+               with no implementation
+            5. The finding targets a Mock/Test contract
+            6. The finding claims admin trust issues (e.g.,
+               "owner could rug") which are design choices
 
-            ## KEEP IF any of these patterns are confirmed:
-            A. You can quote vulnerable line(s) AND there is
-               a concrete exploit path with no existing guard
-            B. A public/external function modifies state
-               (storage writes, token transfers) WITHOUT
-               access control, and an attacker calling it
-               causes economic harm (fee avoidance, balance
-               manipulation, token theft)
-            C. A function accepts an attacker-controlled
-               address parameter (e.g., `from`, `to`,
-               `recipient`) and uses it in token transfers
-               without verifying msg.sender == parameter
-            D. A missing state update causes downstream
-               accounting errors (e.g., _deployedAmount not
-               updated, index not advanced with balance)
-            E. An internal function called by an external
-               entry point without access control can
-               transfer tokens using third-party allowances
+            ## KEEP IF (assume valid unless clearly wrong):
+            A. The finding describes a plausible attack path
+               even if you cannot fully verify all steps
+            B. The finding identifies missing validation,
+               incorrect calculation, or state inconsistency
+            C. The finding describes privilege escalation,
+               unauthorized access, or fund manipulation
+            D. The finding describes protocol-specific logic
+               errors (coordinator abuse, AMO integration,
+               reward distribution, vesting calculations)
+            E. The finding describes cross-contract issues
+               that require understanding multiple files
+            F. You are uncertain whether the finding is valid
+               — when in doubt, KEEP it
 
-            ## IMPORTANT ANALYSIS RULES
-            - Do NOT assume access control exists — read the
-              actual function signature and modifiers
-            - Trace internal functions to their external
-              callers: if an internal function handles funds
-              and its external caller has no access control,
-              the internal function IS reachable by anyone
-            - For base/abstract contracts: vulnerabilities
-              in implemented functions are real even if the
-              contract is abstract — subclasses inherit them
-            - Verify claims against the code: if a finding
-              says "fee calculation is wrong", check the
-              actual formula in the code before deciding
+            ## IMPORTANT
+            - Do NOT reject findings just because they are
+              complex or hard to verify
+            - Do NOT reject findings about privileged roles
+              (coordinator, operator) unless the role is
+              clearly trusted by design
+            - Do NOT reject findings about math/precision
+              errors unless you can prove the math is correct
+            - Protocol-specific findings (AMO, coordinator,
+              validator rewards) are often valid — KEEP them
 
             ## OUTPUT FORMAT
-            Output valid JSON with this structure:
+            Output valid JSON:
             {
               "verified": [
                 {
                   "id": "<finding ID>",
                   "keep": true/false,
-                  "reason": "<brief reason>",
-                  "vulnerable_lines": "<quoted line(s) or null>"
+                  "reason": "<brief reason>"
                 }
               ]
             }
 
             IMPORTANT: Output ONLY valid JSON. Include ALL
-            finding IDs.
+            finding IDs. Default to keep=true when uncertain.
         """)
 
         # Build related files section
@@ -1466,10 +1533,13 @@ class BaselineRunner:
         return deduped
 
     def post_process_vulnerabilities(
-        self, vulnerabilities: Vulnerabilities, file_path: str
+        self,
+        vulnerabilities: Vulnerabilities,
+        file_path: str,
     ) -> Vulnerabilities:
-        """Post-process vulnerabilities: filter by confidence and standardize locations."""
-        confidence_threshold = 0.87
+        """Post-process vulnerabilities: filter by confidence
+        and standardize locations."""
+        confidence_threshold = 0.90
         filtered = []
         filtered_count = 0
         noise_count = 0
@@ -1481,6 +1551,12 @@ class BaselineRunner:
                 continue
 
             calibrated_confidence = v.confidence
+
+            # Penalize findings with missing or weak attack traces
+            if not v.attack_trace:
+                calibrated_confidence = max(0.0, calibrated_confidence - 0.06)
+            elif len(v.attack_trace) == 1:
+                calibrated_confidence = max(0.0, calibrated_confidence - 0.03)
 
             # Boost confidence for well-formed Contract.function locations
             location_parts = v.location.replace(":", ".").split(".")
@@ -1649,6 +1725,127 @@ class BaselineRunner:
 
         return location
 
+    def triage_files(
+        self, files, source_dir
+    ) -> tuple[dict[str, str], list, list, int, int]:
+        """Classify files as core, supporting, or skip via LLM.
+
+        Returns:
+            (files_content, core_files, supporting_files,
+             input_tokens, output_tokens)
+        """
+        console.print("\n[bold cyan]LLM file triage[/bold cyan]")
+
+        # Read all files into dict
+        files_content: dict[str, str] = {}
+        for file_path in files:
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                if content.strip():
+                    rel = str(file_path.relative_to(source_dir))
+                    files_content[rel] = content
+            except Exception:
+                pass
+
+        if not files_content:
+            return {}, [], [], 0, 0
+
+        # Build file summaries (path, size, first ~50 lines)
+        summaries = []
+        for rel_path, content in sorted(files_content.items()):
+            lines = content.splitlines()[:50]
+            preview = "\n".join(lines)
+            summaries.append(
+                f"### {rel_path} ({len(content)} bytes)\n"
+                f"```\n{preview}\n```"
+            )
+        summaries_text = "\n\n".join(summaries)
+
+        triage_prompt = dedent("""\
+            You are a smart contract security triage assistant.
+            Classify each file into one of three categories:
+
+            - **core**: Main protocol logic — handles funds,
+              state mutations, access control, liquidations,
+              rewards, swaps, vaults, routers, staking.
+            - **supporting**: Helper libraries, utility contracts,
+              data structures, simple wrappers, math libraries.
+            - **skip**: Pure interfaces with no implementation,
+              abstract bases with no logic, empty/stub contracts.
+
+            Output ONLY valid JSON:
+            {"classifications": [
+              {"file": "<relative_path>", "class": "core"},
+              ...
+            ]}
+        """)
+
+        user_prompt = "Classify these source files:\n\n" + summaries_text
+
+        try:
+            messages = [
+                {"role": "system", "content": triage_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
+            response = self.inference(messages=messages)
+            response_content = response["content"].strip()
+            result = self.clean_json_response(response_content)
+
+            input_tokens = response.get("input_tokens", 0)
+            output_tokens = response.get("output_tokens", 0)
+
+            # Parse classifications
+            classifications = {}
+            for item in result.get("classifications", []):
+                file_name = item.get("file", "")
+                file_class = item.get("class", "core")
+                classifications[file_name] = file_class
+
+            # Map back to Path objects
+            path_by_rel = {str(f.relative_to(source_dir)): f for f in files}
+
+            core_files = []
+            supporting_files = []
+            skip_count = 0
+            for rel_path in files_content:
+                cls = classifications.get(rel_path, "core")
+                path_obj = path_by_rel.get(rel_path)
+                if not path_obj:
+                    continue
+                if cls == "skip":
+                    skip_count += 1
+                elif cls == "supporting":
+                    supporting_files.append(path_obj)
+                else:
+                    core_files.append(path_obj)
+
+            console.print(
+                f"[dim]  → Triage: {len(core_files)} core, "
+                f"{len(supporting_files)} supporting, "
+                f"{skip_count} skipped[/dim]"
+            )
+
+            return (
+                files_content,
+                core_files,
+                supporting_files,
+                input_tokens,
+                output_tokens,
+            )
+
+        except Exception as e:
+            console.print(
+                f"[yellow]Triage failed ({e}), treating "
+                f"all files as core[/yellow]"
+            )
+            all_files = [
+                f
+                for f in files
+                if str(f.relative_to(source_dir)) in files_content
+            ]
+            return files_content, all_files, [], 0, 0
+
     def analyze_file(
         self,
         relative_path: str,
@@ -1679,7 +1876,7 @@ class BaselineRunner:
             parser = PydanticOutputParser(pydantic_object=Vulnerabilities)
             format_instructions = parser.get_format_instructions()
             system_prompt = _build_audit_prompt(
-                AUDIT_DOMAIN_1_CORE_SAFETY, format_instructions
+                APPROACH_A_LOGIC_FUNDS, format_instructions
             )
 
         # Extract just the filename for clearer reference
@@ -1736,7 +1933,7 @@ class BaselineRunner:
             console.print(f"[red]Error analyzing {file_path.name}: {e}[/red]")
             return Vulnerabilities(vulnerabilities=[]), 0, 0
 
-    def process_file(self, file_path, source_dir):
+    def process_file(self, file_path, source_dir, approaches=None):
         relative_path = str(file_path.relative_to(source_dir))
 
         try:
@@ -1746,6 +1943,9 @@ class BaselineRunner:
             if not content.strip():
                 return "skipped", None
 
+            if approaches is None:
+                approaches = AUDIT_APPROACHES
+
             parser = PydanticOutputParser(pydantic_object=Vulnerabilities)
             format_instructions = parser.get_format_instructions()
 
@@ -1753,7 +1953,7 @@ class BaselineRunner:
             total_input_tokens = 0
             total_output_tokens = 0
 
-            for prompt_name, domain_section in AUDIT_PROMPTS:
+            for prompt_name, domain_section in approaches:
                 sys_prompt = _build_audit_prompt(
                     domain_section, format_instructions
                 )
@@ -1767,7 +1967,7 @@ class BaselineRunner:
                 total_input_tokens += in_tok
                 total_output_tokens += out_tok
 
-            # Deduplicate by ID across prompts
+            # Deduplicate by ID across approaches
             unique = {v.id: v for v in all_findings}
             confirmed = list(unique.values())
 
@@ -1918,13 +2118,32 @@ class BaselineRunner:
 
         console.print(f"[dim]Found {len(files)} files to analyze[/dim]")
 
+        # LLM file triage
+        (
+            files_content,
+            core_files,
+            supporting_files,
+            triage_in,
+            triage_out,
+        ) = self.triage_files(files, source_dir)
+
+        total_input_tokens = triage_in
+        total_output_tokens = triage_out
+
+        # Build work items: core gets both approaches,
+        # supporting gets approach A only
+        work_items = []
+        for fp in core_files:
+            work_items.append((fp, AUDIT_APPROACHES))
+        for fp in supporting_files:
+            work_items.append((fp, [AUDIT_APPROACHES[0]]))
+
         # Analyze files
         all_vulnerabilities = []
         files_analyzed = 0
         files_skipped = 0
-        total_input_tokens = 0
-        total_output_tokens = 0
 
+        total_work = len(work_items)
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -1935,15 +2154,19 @@ class BaselineRunner:
             transient=False,
         ) as progress:
             task = progress.add_task(
-                f"Analyzing {len(files)} files...", total=len(files)
+                f"Analyzing {total_work} files...",
+                total=total_work,
             )
 
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = {
                     executor.submit(
-                        self.process_file, file_path, source_dir
-                    ): file_path
-                    for file_path in files
+                        self.process_file,
+                        fp,
+                        source_dir,
+                        approaches,
+                    ): fp
+                    for fp, approaches in work_items
                 }
 
                 for future in as_completed(futures):
@@ -1962,25 +2185,16 @@ class BaselineRunner:
                     elif result_type == "error":
                         filename, err = result
                         console.print(
-                            f"[red]Error processing {filename}: {err}[/red]"
+                            f"[red]Error processing "
+                            f"{filename}: {err}[/red]"
                         )
                         files_skipped += 1
 
                     progress.advance(task)
 
         # Pass 2: Cross-contract analysis
+        # (reuse files_content from triage)
         MAX_CROSS_CONTRACT_TOKENS = 100_000
-        files_content = {}
-        for file_path in files:
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                if content.strip():
-                    relative_path = str(file_path.relative_to(source_dir))
-                    files_content[relative_path] = content
-            except Exception:
-                pass
-
         total_chars = sum(len(c) for c in files_content.values())
         estimated_tokens = total_chars // 4
 
@@ -2015,7 +2229,7 @@ class BaselineRunner:
         total_output_tokens += rerank_out
 
         # Cap total findings to reduce false positive noise
-        MAX_FINDINGS = 8
+        MAX_FINDINGS = 5
         if len(vulns) > MAX_FINDINGS:
             sev_order = {
                 "critical": 0,

@@ -69,7 +69,6 @@ class APIPlatformClient:
         self.hotkey = wallet.hotkey
 
     def _create_wallet_token(self, hotkey: str, expiry_minutes: int = 1) -> str:
-<<<<<<< HEAD
         iat = int(time.time())
         exp = iat + (expiry_minutes * 60)
         payload = {

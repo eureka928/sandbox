@@ -440,10 +440,317 @@ domain. Zero/negative inputs produce meaningless results \
 without error.
 """
 
+APPROACH_D_AUDIT_DIMENSIONS = """\
+## SYSTEMATIC AUDITING — Seven Dimensions
+For each function, systematically verify across all dimensions:
+
+**Dimension 1: Access Control and Authorization**
+Verify that functions performing critical operations have appropriate \
+access restrictions. Functions that modify protocol state, change \
+balances, deploy contracts, execute trades, or alter protocol \
+parameters should have access control modifiers unless intentionally \
+public. Pay special attention to functions that update state variables \
+used in economic calculations (fees, rewards, interest, accounting). \
+If such functions lack access control, users can manipulate timing \
+or values to avoid fees or gain unfair advantages.
+
+**Dimension 2: Input Validation and Parameter Checking**
+Functions must validate all input parameters for correctness, \
+bounds, and expected ranges. When functions receive parameters \
+that should match values computed by other functions, verify the \
+execution function validates them against computed values. \
+Verify functions use correct variables — functions accepting \
+multiple input types must distinguish between different value \
+sources. When determining parameters for external systems via \
+address/value comparisons, verify the parameter is determined \
+by querying the external system's actual structure rather than \
+assuming fixed relationships.
+
+**Dimension 3: State Management and Consistency**
+When multiple state variables track the same underlying state, \
+they must remain synchronized. If one updates conditionally but \
+another always updates, they desynchronize when the condition is \
+false. Verify cancel/reverse operations undo ALL state changes. \
+When functions call internal functions that depend on shared \
+state, verify state changes happen BEFORE the dependent function \
+executes. For replay protection, verify commitment point — if \
+state is committed before operations complete, failure leaves \
+committed state consumed without intended effect.
+
+**Dimension 4: Mathematical Operations and Precision**
+Division can round to zero when numerator is much smaller than \
+denominator. Trace every division and verify how its result is \
+used. When computed values are recalculated after state changes, \
+verify formulas account for all relevant prior state mutations. \
+When adjustments are based on multi-component values, verify \
+calculations use complete totals rather than partial components.
+
+**Dimension 5: Control Flow and Logic**
+Multiple independent adjustments can occur simultaneously. If \
+code treats them as mutually exclusive via if-else, one is \
+silently ignored. Verify independent conditions use independent \
+if statements. Verify return values match expected types and \
+units. When functions implement interfaces, verify return values \
+use correct units — unit mismatches cause cascading accounting \
+errors.
+
+**Dimension 6: External Interactions and Dependencies**
+When contracts create/interact with external resources, consider \
+race conditions. Deterministic addresses (CREATE opcode) can be \
+front-run. Verify interface definitions match actual external \
+contracts — function names, parameter types/counts, struct \
+fields, return types must all match exactly. Different protocol \
+versions may have incompatible interfaces.
+
+**Dimension 7: Edge Cases and Boundary Conditions**
+Systematically consider: zero values, maximum values, empty \
+collections, initial/final states, partial processing, \
+concurrent executions, state transitions, time boundaries, \
+overflow/underflow. For functions with multiple subcalls, \
+analyze what happens when only some succeed. Are state \
+commitments made before or after verifying successful \
+completion?
+"""
+
+APPROACH_E_BOUNDARY_CONSISTENCY = """\
+## BOUNDARY CONSISTENCY VERIFICATION
+Analyze contracts focusing on consistency at system boundaries:
+
+**Boundary 1: Access Control Boundaries**
+Functions updating state variables used in economic calculations \
+(fees, rewards, interest, accounting) must have appropriate \
+access control. Systematic verification:
+1. Identify functions updating state used in economic calcs \
+(balance tracking, position/accounting state, values read by \
+fee/reward logic).
+2. Check access control on those update functions.
+3. Identify economic impact — what operations read these \
+variables? What happens if values are manipulated at critical \
+times?
+
+**Boundary 2: Representation Boundaries**
+Functions implementing interfaces must return values in the \
+correct units. Units encompass semantic meaning AND numeric \
+scaling. Systematic unit verification:
+1. What representation does the function use internally? \
+(raw, normalized, converted values)
+2. What representation does it return?
+3. What do callers expect? (share calcs, external protocols, \
+oracles/swaps)
+4. Verify conversions at boundaries — if a function returns \
+one representation but callers expect another, it must convert.
+Trace full call chain: identify function returning value, \
+consumers expecting different unit, specific calculations that \
+break, and cascading effects through the system.
+
+**Boundary 3: Data Access and Collection Integrity**
+For functions accessing collections or indexed data, verify \
+iteration mechanisms access all intended elements. Check:
+1. How does the function determine which elements to process?
+2. Where is data stored and how is it indexed?
+3. Does the access mechanism reach all intended data?
+4. Do loop bounds stay synchronized with data modifications?
+For loops using counters: can the counter and storage become \
+desynchronized? For indexed access: are identifiers assumed \
+contiguous? Can data persist after bounds decrease?
+
+**Boundary 4: External Interface Compatibility**
+When integrating with external protocols (DEXes, AMMs, gauges, \
+routers), declared interfaces must match actual contracts:
+1. Function signatures — parameter types, counts, return types
+2. Struct definitions — all fields with correct types and order
+3. Function names — must be exact matches
+4. Different protocol versions may have incompatible interfaces
+Mismatched interfaces cause reverts, silent failures, or \
+incorrect behavior.
+"""
+
+APPROACH_F_VULN_PATTERNS = """\
+## HIGH-PRIORITY VULNERABILITY PATTERNS
+Check these patterns FIRST — they frequently lead to high-severity \
+findings:
+
+**Pattern 1: User Control Over Execution Outcomes**
+Operations that modify user asset positions or values should let \
+users express acceptable execution bounds (e.g., minimum output). \
+Without such controls, users are exposed to unfavorable execution \
+from market conditions or adversarial actions. For functions with \
+multiple subcalls: can some succeed while others fail, leaving \
+users in a partially-executed state without protection?
+
+**Pattern 2: Validation Timing and Order of Operations**
+Validation must occur BEFORE state changes (token transfers, \
+balance updates, swap execution). If validation occurs AFTER, \
+invalid operations can complete. Check: does the function execute \
+first, then validate?
+
+**Pattern 3: Execution Boundaries and Validation Consistency**
+When operations execute differently than initially requested \
+(adjusted by liquidity, balances, etc.), verify validation, \
+accounting, and state updates align with what actually occurred. \
+All fund movements and state changes must reference the actual \
+execution result consistently. Mixed use of requested vs actual \
+values in related operations indicates accounting inconsistency.
+
+**Pattern 4: Access Control in Interfaces**
+Interfaces declaring administrative or critical functions (pool \
+creation, fee collection, parameter changes) without access \
+control modifiers. Check: does the interface show access control \
+expectations for critical functions?
+
+**Pattern 5: Conditional Recipient Selection**
+Functions that send value to recipients based on conditional \
+logic. Verify all code paths correctly identify the intended \
+recipient. Authorization checks and recipient determination \
+must be consistent. Default assignments with conditional \
+overrides must cover all necessary cases.
+
+**Pattern 6: State Synchronization in Function Chains**
+When functions call other internal functions that depend on \
+shared state, verify state modifications complete BEFORE \
+dependent functions execute. When operations reduce state \
+values and trigger dependent operations, verify state is set \
+to final intended value BEFORE dependent function reads it.
+
+**Pattern 7: State Commitment Timing with External Operations**
+For operations with replay protection (nonces, signatures, \
+flags, counters): if commitment happens before operations that \
+can fail, the commitment is wasted on failure. Check: when is \
+replay protection state modified relative to operation \
+completion? Are there state changes before verifying all \
+intended operations succeeded?
+
+**Pattern 8: External System Assumptions and Interface \
+Compatibility**
+When integrating with external protocols (DEXes, AMMs, gauges, \
+routers), verify interface definitions match actual contracts: \
+parameter count, struct fields, function names, return types. \
+Different protocol versions or forks may have incompatible \
+interfaces. Fork behavioral differences: features may be moved \
+to different contracts (e.g., fee collection moved from pool to \
+distributor). Calling the original function does nothing while \
+the actual feature is elsewhere.
+
+**Pattern 9: Signature Execution Context Binding**
+For signature-based authorization, check what data is in the \
+signed digest. Is the intended executor/submitter address part \
+of the signed message, or can anyone submit? Does the signature \
+bind to execution context variables that caller controls? If \
+not, front-runner submits with hostile context, nonce consumed.
+
+## SYSTEMATIC VERIFICATION AFTER PATTERNS
+After checking patterns above, verify:
+- Access Control: critical operations restricted; economic \
+state update functions need access control
+- Input Validation: parameters validated for bounds/ranges; \
+execution functions validate against computed values
+- State Management: related variables synchronized; conditional \
+updates consistent; cancel/reverse operations undo ALL changes
+- Math: division rounding to zero; calculations reference correct \
+values (actual vs requested); multi-component totals complete
+- Control Flow: independent conditions separate (not if-else); \
+return value units match interface contracts
+- External: function signatures match; existence checks before \
+CREATE; deterministic address front-running
+- Edge Cases: zero/max values; partial processing; subcall \
+failure while parent succeeds; state committed before completion
+"""
+
+APPROACH_G_TYPE_LIFECYCLE = """\
+## TYPE SYSTEM INTEGRITY & OPERATION LIFECYCLE
+Focus on type representation, precision boundaries, assembly \
+control flow, and operation lifecycle correctness:
+
+### TYPE SYSTEM
+1. **Value Representation and Comparison**: When contracts \
+define custom value types (user-defined types, packed formats, \
+encoded values), can the same logical value have multiple bit \
+representations? Equality comparing raw underlying bits without \
+decoding fails for equivalent values with different \
+representations (different precision levels, normalization \
+states).
+
+2. **Precision and Conversion Boundaries**: When values are \
+packed, converted, or downcast, does format/size selection \
+consider all relevant factors? If precision level chosen based \
+only on some parameters (e.g., exponent range but not digit \
+count), conversion silently truncates. Check functions that \
+convert between representations for silent precision loss.
+
+3. **Control Flow in Low-Level Code (Assembly/Yul)**: Check \
+for opcodes that halt execution without returning a value. \
+Edge case handlers (zero, infinity, special values) that \
+terminate silently disrupt the entire calling context. \
+Functions should return proper values, not halt execution. \
+Pattern: assembly function returns normally in general case but \
+silently terminates for edge cases.
+
+4. **Mathematical Domain Validation**: Math functions have \
+defined domains — inputs outside produce undefined results. \
+Logarithm requires positive inputs (no zero, no negative). \
+Square root requires non-negative. Division requires non-zero \
+divisor. Check: does function extract value components but \
+ignore sign bit, computing f(|x|) instead of f(x)? Callers \
+receive plausible-looking but mathematically impossible results.
+
+### OPERATION LIFECYCLE
+5. **Operation Reversal Completeness**: When operations can be \
+cancelled/reversed/unwound, identify ALL state changes from \
+the original operation and verify cancel/reverse undoes ALL of \
+them. Common pattern: operation decrements buffer/reserve, \
+cancel returns tokens but doesn't restore buffer. If cancelled \
+amounts tracked for later processing, verify funds exist where \
+processing expects them.
+
+6. **State Commitment Timing**: For replay protection \
+(nonces, signatures, flags): if committed before operation \
+completion, failures leave state consumed but operation \
+incomplete. For external calls: can call fail while parent \
+succeeds? Check: are there state changes before verifying all \
+intended operations succeeded?
+
+7. **Resource-Controlled Execution**: Caller controls gas; \
+subcalls receive only a fraction (63/64 rule in EVM). Can \
+attacker craft resource limits where parent completes but \
+subcalls fail? Combined with non-revert modes: subcall fails \
+silently, parent succeeds, state consumed. Verify operation \
+success is checked before committing state.
+
+8. **Authorization Context Binding**: For signature-based \
+authorization, check what data is in the signed digest. Is \
+intended executor/submitter bound? Are execution parameters \
+(value, context) bound? Can the same authorization be used \
+with different execution contexts? Pattern: signature doesn't \
+bind caller → front-runner submits with hostile context → \
+nonce consumed.
+
+### EXTERNAL INTEGRATION
+9. **Interface Definition Compatibility**: When protocol \
+declares interfaces for external systems, verify exact \
+compatibility: parameter count (declared vs actual), struct \
+field completeness (missing required fields cause ABI \
+encoding failure), function name differences across versions \
+(pairFor vs poolFor, getReward signature variations).
+
+10. **Fork Behavioral Divergence**: Even when interface \
+appears compatible, protocol forks may have changed behavior. \
+Features moved to different contracts (fee/reward collection \
+no longer in pool contract, now in separate distributor). \
+Functions exist but no longer perform expected operations — \
+update functions may have removed fee accumulation logic. \
+Pattern: protocol assumes fork works like original, but fork \
+changed where/how features work. Impact: funds permanently \
+stuck, rewards not collected, integration completely broken.
+"""
+
 AUDIT_APPROACHES = [
     ("logic_funds", APPROACH_A_LOGIC_FUNDS),
     ("access_safety", APPROACH_B_ACCESS_SAFETY),
     ("attack_lifecycle", APPROACH_C_ATTACK_LIFECYCLE),
+    ("audit_dimensions", APPROACH_D_AUDIT_DIMENSIONS),
+    ("boundary_consistency", APPROACH_E_BOUNDARY_CONSISTENCY),
+    ("vuln_patterns", APPROACH_F_VULN_PATTERNS),
+    ("type_lifecycle", APPROACH_G_TYPE_LIFECYCLE),
 ]
 
 
@@ -479,6 +786,7 @@ class BaselineRunner:
         )
         self.project_id = os.getenv("PROJECT_ID", "local")
         self.job_id = os.getenv("JOB_ID", "local")
+        self._readme_context = ""
 
         console.print(f"Inference: {self.inference_api}")
 
@@ -2051,8 +2359,15 @@ array of 2-4 concrete steps.
         # Extract just the filename for clearer reference
         filename = file_path.name
 
+        readme_block = ""
+        if self._readme_context:
+            readme_block = (
+                "## Project Context (from README)\n"
+                f"{self._readme_context}\n\n"
+            )
+
         user_prompt = dedent(f"""
-            Analyze {filename} for security vulnerabilities.
+            {readme_block}Analyze {filename} for security vulnerabilities.
 
             File path: {relative_path}
             ```{file_path.suffix[1:] if file_path.suffix else 'txt'}
@@ -2301,6 +2616,19 @@ array of 2-4 concrete steps.
 
         console.print(f"[dim]Found {len(files)} files to analyze[/dim]")
 
+        # Read README.md for project context
+        self._readme_context = ""
+        for readme_name in ("README.md", "readme.md"):
+            readme_path = source_dir / readme_name
+            if readme_path.exists():
+                try:
+                    self._readme_context = readme_path.read_text(
+                        encoding="utf-8"
+                    )[:3000]
+                except Exception:
+                    pass
+                break
+
         # LLM file triage
         (
             files_content,
@@ -2325,6 +2653,10 @@ array of 2-4 concrete steps.
         all_vulnerabilities = []
         files_analyzed = 0
         files_skipped = 0
+
+        analysis_start = time.time()
+        global_timeout = 18 * 60  # 18 minutes
+        future_timeout = 3 * 60  # 3 minutes per future
 
         total_work = len(work_items)
         with Progress(
@@ -2352,28 +2684,75 @@ array of 2-4 concrete steps.
                     for fp, approaches in work_items
                 }
 
-                for future in as_completed(futures):
-                    result_type, result = future.result()
+                completed_iter = as_completed(futures, timeout=global_timeout)
 
-                    if result_type == "ok":
-                        vulns, in_tok, out_tok = result
-                        all_vulnerabilities.extend(vulns)
-                        files_analyzed += 1
-                        total_input_tokens += in_tok
-                        total_output_tokens += out_tok
+                stopped_early = False
+                try:
+                    for future in completed_iter:
+                        try:
+                            result_type, result = future.result(
+                                timeout=future_timeout
+                            )
+                        except (TimeoutError, Exception) as exc:
+                            fp = futures.get(future, "unknown")
+                            console.print(
+                                f"[red]Future error " f"for {fp}: {exc}[/red]"
+                            )
+                            files_skipped += 1
+                            progress.advance(task)
+                            continue
 
-                    elif result_type == "skipped":
-                        files_skipped += 1
+                        if result_type == "ok":
+                            vulns, in_tok, out_tok = result
+                            all_vulnerabilities.extend(vulns)
+                            files_analyzed += 1
+                            total_input_tokens += in_tok
+                            total_output_tokens += out_tok
 
-                    elif result_type == "error":
-                        filename, err = result
-                        console.print(
-                            f"[red]Error processing "
-                            f"{filename}: {err}[/red]"
-                        )
-                        files_skipped += 1
+                        elif result_type == "skipped":
+                            files_skipped += 1
 
-                    progress.advance(task)
+                        elif result_type == "error":
+                            filename, err = result
+                            console.print(
+                                f"[red]Error processing "
+                                f"{filename}: {err}[/red]"
+                            )
+                            files_skipped += 1
+
+                        progress.advance(task)
+
+                        # Early stopping: enough findings
+                        if len(all_vulnerabilities) > 100:
+                            console.print(
+                                f"[yellow]"
+                                f"{len(all_vulnerabilities)}"
+                                f" findings, stopping"
+                                f" early[/yellow]"
+                            )
+                            stopped_early = True
+                            break
+
+                        # Global timeout check
+                        elapsed = time.time() - analysis_start
+                        if elapsed > global_timeout:
+                            console.print(
+                                "[yellow]Global timeout"
+                                " reached, stopping"
+                                "[/yellow]"
+                            )
+                            stopped_early = True
+                            break
+
+                except TimeoutError:
+                    console.print(
+                        "[yellow]Global timeout reached, stopping[/yellow]"
+                    )
+                    stopped_early = True
+
+                if stopped_early:
+                    for f in futures:
+                        f.cancel()
 
         # Pass 2: Cross-contract analysis
         # (reuse files_content from triage)

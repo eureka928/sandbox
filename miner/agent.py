@@ -253,6 +253,25 @@ self-liquidate to extract the liquidation bonus?
 flows, trace: amount taken -> amount used -> refund. If the \
 taken amount already accounts for partial fills, an \
 additional refund double-counts and drains the protocol.
+9. **State synchronization in function chains**: When \
+functions call other internal functions that depend on shared \
+state, verify state modifications complete BEFORE the \
+dependent function executes. If dependent function reads \
+state before reset, it uses stale values.
+10. **Cancel/reverse operation completeness**: When operations \
+can be cancelled/reversed, verify ALL state changes are \
+undone. If operation A decrements buffer/reserve, does \
+cancel(A) restore it? If cancelled amounts are tracked for \
+later processing, verify funds exist where processing \
+expects them.
+11. **Multi-component calculation completeness**: When \
+calculating adjustments from values with multiple components \
+(base + accrued + pending), verify ALL components are \
+included in comparisons, not just partial amounts.
+12. **Recomputation correctness after state changes**: When \
+computed values are recalculated after state changes, verify \
+formulas account for all categories of state mutations and \
+accumulated progress.
 
 ## OMISSION BUGS — Logic & Fund Flows
 1. **Return value unit mismatch**: Does the function return \
@@ -264,6 +283,16 @@ accrued before allowing a claim?
 4. **Missing index update before share change**: When \
 minting or burning shares, is the reward index updated \
 first?
+5. **Return value unit mismatch (extended)**: Trace full \
+call chain — identify what unit the function returns, what \
+unit callers expect, and which calculations break. Units \
+encompass semantic meaning AND numeric scaling. When systems \
+use internal vs external representations, verify conversions \
+at function boundaries.
+6. **Missing state update in function chain ordering**: When \
+a function reduces state and then calls a dependent function, \
+verify state is set to final intended value BEFORE the \
+dependent call. Stale reads allow incorrect calculations.
 """
 
 APPROACH_B_ACCESS_SAFETY = """\
@@ -304,6 +333,35 @@ hardcoded assumptions produce wrong swap directions.
 9. **Unvalidated critical parameters**: Functions performing \
 swaps, rebalances, or liquidations with user-supplied \
 parameters that have a specific valid range but no validation.
+10. **State commitment timing with external operations**: \
+For operations with replay protection (nonces, signatures, \
+flags), verify state is committed ONLY AFTER all operations \
+succeed. Pattern: nonce consumed → external call fails → \
+nonce wasted, operation didn't complete.
+11. **Resource-controlled execution (63/64 gas rule)**: \
+Subcalls receive only 63/64 of remaining gas. Can attacker \
+craft gas limits so parent completes but subcall OOGs? \
+Combined with non-revert error handling (try/catch, \
+low-level call), subcall fails silently, parent succeeds, \
+state consumed.
+12. **Signature execution context binding**: For \
+signature-based authorization, check if the executor/ \
+submitter address is part of the signed digest. If not, \
+anyone with a valid signature can submit it with hostile \
+execution context (front-running).
+13. **Interface compatibility with external protocols**: \
+When integrating with external protocols (DEXes, AMMs, \
+gauges, routers), verify declared interface definitions \
+match actual contracts — function names, parameter \
+types/counts, struct field definitions, return types must \
+match exactly. Different protocol versions/forks may be \
+incompatible.
+14. **Partial execution analysis**: For functions with \
+multiple operations or subcalls, what happens if some \
+succeed while others fail? Can high-level operations succeed \
+while low-level subcalls fail? If partial execution is \
+possible, what state gets committed? Are users protected \
+from unfavorable partial outcomes?
 
 ## OMISSION BUGS — Access Control & Safety
 1. **Missing access control on destructive functions**: \
@@ -315,11 +373,77 @@ arbitrary caller trigger unintended economic effects?
 3. **Missing state update after external interaction**: After \
 a token transfer or external call succeeds, is the tracking \
 variable updated?
+4. **Missing existence check before deterministic resource \
+creation**: When deploying via CREATE opcode (clone, new), \
+addresses are predictable. Verify resources at those \
+addresses can't be front-run created, causing permanent DoS.
+"""
+
+APPROACH_C_ATTACK_LIFECYCLE = """\
+## HIGH-VALUE PATTERNS — Attack Flows & Operation Lifecycle
+Focus on fund flow tracing, automatic function triggers, \
+operation lifecycle, and type integrity:
+
+1. **Automatic processing of withdrawal funds**: When contracts \
+have receive()/fallback() that trigger deposit/stake operations, \
+withdrawal funds returned from external systems get automatically \
+re-invested. Users cannot collect withdrawals because funds are \
+immediately processed through unintended paths.
+2. **Mixed fund sources in accounting**: Contract cannot \
+distinguish between user deposits and system-returned funds \
+(validator rewards, withdrawal returns). Withdrawal funds \
+treated as new deposits inflate accounting without actual \
+user action.
+3. **Missing caller verification in automatic handlers**: \
+receive()/fallback() functions don't verify caller identity \
+or tx.origin before executing operations. System operations \
+(withdrawals, rewards) can trigger user-facing logic paths.
+4. **Incomplete withdrawal flow**: Withdrawal requests \
+processed but funds not held for user collection — immediately \
+routed through unintended paths. Withdrawal confirmation fails \
+due to insufficient balance.
+5. **State commitment before operation verification**: \
+Operations modify replay-protection state (nonces, signatures, \
+flags) before verifying all subcalls succeed. External call \
+fails → state consumed → operation didn't complete. Check: \
+non-revert error handling (try/catch, low-level call) that \
+allows parent to continue.
+6. **Authorization context bypass in funds destination**: \
+Functions allow multiple entities to call, but destination \
+determination doesn't account for caller identity. One entity \
+claims funds meant for another because access control and \
+destination logic are inconsistent.
+7. **Value representation and comparison errors**: Custom \
+types with multiple bit representations (different precision \
+levels, normalization states) compared via raw bits instead \
+of semantic values. Equal values compare unequal.
+8. **Silent precision truncation in packing/conversion**: \
+When converting between precision formats, format selection \
+based on only partial factors (e.g., exponent range but not \
+digit count). Actual value's magnitude silently truncated.
+9. **Assembly/Yul control flow halts**: Edge case handlers \
+in assembly (zero, infinity, special values) use opcodes \
+that halt execution without returning a value, disrupting \
+the entire calling context.
+
+## OMISSION BUGS — Attack Flows & Lifecycle
+1. **Missing buffer/reserve restoration on cancel**: \
+Operation decrements buffer, cancel returns tokens but \
+doesn't restore buffer counter. Accounting permanently \
+desynchronized.
+2. **Missing success verification before state commitment**: \
+No check that external call succeeded before consuming \
+nonce/flag.
+3. **Missing mathematical domain validation**: Math functions \
+(ln, log, sqrt) don't validate inputs are within valid \
+domain. Zero/negative inputs produce meaningless results \
+without error.
 """
 
 AUDIT_APPROACHES = [
     ("logic_funds", APPROACH_A_LOGIC_FUNDS),
     ("access_safety", APPROACH_B_ACCESS_SAFETY),
+    ("attack_lifecycle", APPROACH_C_ATTACK_LIFECYCLE),
 ]
 
 
@@ -492,6 +616,15 @@ class BaselineRunner:
             ### Protocol Integration Issues
             12. **AMO/DEX integration mismatch**: When AMO contracts integrate with DEXes (Aerodrome, Velodrome, UniV3), verify the liquidity math matches the specific DEX. Different DEX versions have different formulas.
             13. **Validator/delegator reward bypass**: In staking systems, check if validators can claim rewards that should go to delegators, or if slashing can be circumvented.
+
+            ### Interface Compatibility
+            14. **External protocol interface mismatch**: When contracts declare interfaces for external protocols (DEXes, AMMs, gauges, routers), verify definitions match actual contracts. Function names, parameter types/counts, struct fields, and return types must match exactly. Different protocol versions or forks may have incompatible interfaces despite similar names.
+
+            ### Fund Destination Determination
+            15. **Authorization bypass in funds destination**: When functions allow multiple entities to call, verify destination determination accounts for caller identity. Access control may allow multiple entities, but destination logic must restrict who receives funds based on who calls.
+
+            ### Operation Lifecycle
+            16. **State commitment timing across contracts**: When operations span contracts and consume replay protection state (nonces, signatures), verify state is committed only after all cross-contract operations succeed. Partial execution across contract boundaries can consume state without completing the operation.
 
             ## DESCRIPTION REQUIREMENTS
             Each finding MUST include:
@@ -1751,6 +1884,38 @@ array of 2-4 concrete steps.
         if not files_content:
             return {}, [], [], 0, 0
 
+        # Infer main contract names from codebase directory name
+        codebase_name = source_dir.name
+        forced_core_files: set[str] = set()
+        try:
+            file_list = "\n".join(sorted(files_content.keys()))
+            infer_prompt = (
+                "Given a codebase named "
+                f"'{codebase_name}' with these files:\n"
+                f"{file_list}\n\n"
+                "Which file paths are the MAIN contract "
+                "files (the primary protocol logic)? "
+                "Return ONLY a JSON list of relative "
+                'paths, e.g. ["src/Vault.sol"]. '
+                "Pick at most 5 files."
+            )
+            infer_resp = self.inference(
+                messages=[{"role": "user", "content": infer_prompt}]
+            )
+            infer_text = infer_resp["content"].strip()
+            infer_result = self.clean_json_response(infer_text)
+            if isinstance(infer_result, list):
+                forced_core_files = {
+                    f for f in infer_result if f in files_content
+                }
+            if forced_core_files:
+                console.print(
+                    f"[dim]  → Inferred main files: "
+                    f"{forced_core_files}[/dim]"
+                )
+        except Exception:
+            pass
+
         # Build file summaries (path, size, first ~50 lines)
         summaries = []
         for rel_path, content in sorted(files_content.items()):
@@ -1804,6 +1969,10 @@ array of 2-4 concrete steps.
 
             # Map back to Path objects
             path_by_rel = {str(f.relative_to(source_dir)): f for f in files}
+
+            # Force inferred main files to core
+            for fp in forced_core_files:
+                classifications[fp] = "core"
 
             core_files = []
             supporting_files = []
@@ -2035,6 +2204,13 @@ array of 2-4 concrete steps.
             "deploy",
             "deployment",
             "migrations",
+            ".git",
+            "out",
+            "dist",
+            "build",
+            "node",
+            "external",
+            "libraries",
         }
         exclude_prefixes = ("test", "mock", "fake", "stub")
         exclude_suffixes = (".t.sol",)
@@ -2044,6 +2220,13 @@ array of 2-4 concrete steps.
         filtered = []
         for f in files:
             if not f.is_file():
+                continue
+            # Skip very large files (>500KB)
+            if f.stat().st_size > 500_000:
+                continue
+            # Skip multi-extension files (e.g., file.s.sol,
+            # file.t.sol deploy scripts / test scripts)
+            if "." in f.stem:
                 continue
             name_lower = f.name.lower()
             stem_lower = f.stem.lower()
@@ -2130,7 +2313,7 @@ array of 2-4 concrete steps.
         total_input_tokens = triage_in
         total_output_tokens = triage_out
 
-        # Build work items: core gets both approaches,
+        # Build work items: core gets all approaches,
         # supporting gets approach A only
         work_items = []
         for fp in core_files:

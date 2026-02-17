@@ -170,6 +170,7 @@ testing/
 
 jobs/
 projects/
+reports/
 agent_report.json
 
 # AI
